@@ -309,7 +309,7 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def default_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and response[1] == 0x01:
         print("Default Diagnostic Session Passed\n")
         return True
@@ -317,7 +317,7 @@ def default_diagnostic_session(bus):
     return False
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and response[1] == 0x03:
         print("Extended Diagnostic Session Passed\n")
         return True
@@ -325,17 +325,17 @@ def extended_diagnostic_session(bus):
     return False
 
 def Read_IPC_IMEI_Number(bus):
-    response, _uds_error = send_uds_request(bus, 0x22, [0xF1, 0x43], 0x62)
+    response, error_message = send_uds_request(bus, 0x22, [0xF1, 0x43], 0x62)
 
     if not response:
         print("No response received for IMEI Number read")
         return None
 
-    if response[0] != 0x62:
+    if not response or response[0] != 0x62:
         print(f"Unexpected response SID: 0x{response[0]:02X} (expected 0x62)")
         return None
 
-    if response[1] != 0xF1 or response[2] != 0x43:
+    if len(response) < 3 or response[1] != 0xF1 or response[2] != 0x43:
         print(
             f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}, "
             f"expected 0x{0xF1:02X} 0x{0x43:02X}"
@@ -497,5 +497,19 @@ def IPC_IMEI_Number(interface, channel, bitrate, api_url, vin_number):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_IMEI_Number("pcan", "PCAN_USBBUS1", 500000))
+    status, api_value, ecu_value = IPC_IMEI_Number(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        api_url="http://172.31.10.21:5000/vehicles/flashFile/ejo/",
+        vin_number="SH2NB133XSP000000"
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - API: {api_value} | ECU: {ecu_value}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {ecu_value}")

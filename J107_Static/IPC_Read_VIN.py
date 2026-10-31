@@ -15,8 +15,8 @@ import requests
 # =========================
 # Configuration
 # =========================
-TESTER_ID        = 0x7E0
-ECU_RESPONSE_ID  = 0x7E8
+TESTER_ID = 0x7C9
+ECU_RESPONSE_ID = 0x7C1
 
 
 
@@ -309,7 +309,7 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def read_vehicle_vin_number(bus):
-    response, _uds_error = send_uds_request(bus, 0x22, [0xF1, 0x90], 0x62)
+    response, error_message = send_uds_request(bus, 0x22, [0xF1, 0x90], 0x62)
 
     if not response or response[1:3] != [0xF1, 0x90]:
         return None
@@ -445,5 +445,19 @@ def IPC_Read_VIN(interface, channel, bitrate, api_url, vin_number):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Read_VIN("pcan", "PCAN_USBBUS1", 500000))
+    status, api_value, ecu_value = IPC_Read_VIN(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        api_url="http://10.121.2.174:3002/vehicles/flashFile/ejo",
+        vin_number="SH2NB133XSP000000"
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - API: {api_value} | ECU: {ecu_value}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {ecu_value}")

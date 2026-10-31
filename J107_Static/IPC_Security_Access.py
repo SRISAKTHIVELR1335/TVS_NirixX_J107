@@ -346,7 +346,7 @@ def compute_key(seed_bytes: bytes) -> bytes:
     return key_int.to_bytes(len(seed_bytes), "big")
 
 def default_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and len(response) >= 2 and response[1] == 0x01:
         print("Default Diagnostic Session Passed.\n")
         return True
@@ -354,7 +354,7 @@ def default_diagnostic_session(bus):
     return False
 
 def programming_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x02], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x02], 0x50)
     if response and len(response) >= 2 and response[1] == 0x02:
         print("Programming Diagnostic Session Passed.\n")
         return True
@@ -362,7 +362,7 @@ def programming_diagnostic_session(bus):
     return False
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and len(response) >= 2 and response[1] == 0x03:
         print("Extended Diagnostic Session Passed.\n")
         return True
@@ -370,7 +370,7 @@ def extended_diagnostic_session(bus):
     return False
 
 def request_seed(bus) -> Optional[bytes]:
-    response, _uds_error = send_uds_request(bus, 0x27, [0x01], 0x67)
+    response, error_message = send_uds_request(bus, 0x27, [0x01], 0x67)
     if response and len(response) >= 4 and response[1] == 0x01:
         seed_bytes = bytes(response[2:10])
         print(f"  [SA] Seed received: {seed_bytes.hex().upper()}")
@@ -380,7 +380,7 @@ def request_seed(bus) -> Optional[bytes]:
 
 def send_key(bus, key_bytes: bytes) -> bool:
     key_payload = list(key_bytes)
-    response, _uds_error = send_uds_request(bus, 0x27, [0x02] + key_payload, 0x67)
+    response, error_message = send_uds_request(bus, 0x27, [0x02] + key_payload, 0x67)
     if response and len(response) >= 2 and response[1] == 0x02:
         print("Security Access - PASSED\n")
         return True
@@ -436,7 +436,7 @@ def IPC_Security_Access(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF},])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         if not default_diagnostic_session(bus):
             error_message = "Failed to enter default diagnostic session."
             return False, error_message
@@ -475,5 +475,17 @@ def IPC_Security_Access(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Security_Access("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Security_Access(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - SECURITY ACCESS: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

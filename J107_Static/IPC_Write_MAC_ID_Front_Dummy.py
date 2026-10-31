@@ -363,7 +363,7 @@ def IPC_Write_MAC_ID_Front_Dummy(interface, channel, bitrate):
             print(error_message)
             return False, error_message
 
-        if response[1] != 0xF1 or response[2] != 0x32:
+        if len(response) < 3 or response[1] != 0xF1 or response[2] != 0x32:
             error_message = f"Unexpected DID in response: 0x{response[1]:02X}{response[2]:02X}"
             print(error_message)
             return False, error_message
@@ -396,13 +396,13 @@ def IPC_Write_MAC_ID_Front_Dummy(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     IPC_Write_MAC_ID_Front_Dummy(
+    status, result = IPC_Write_MAC_ID_Front_Dummy(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000
     )
 
     if status:
-        print(f"\nSTATUS : SUCCESS - MAC ID FRONT DUMMY WRITE: {result}")
+        print(f"\nSTATUS : SUCCESS - WRITE MAC ID FRONT DUMMY: {result}")
     else:
         print(f"\nSTATUS : FAILURE / ERROR - {result}")

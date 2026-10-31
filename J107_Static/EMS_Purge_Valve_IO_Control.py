@@ -304,6 +304,30 @@ def _communication_error_message():
     )
 
 
+def _is_error_value(value):
+    """True when a Read/Write helper returned an error string.
+
+    The helpers return either a value or an error message, and the message
+    may come from _communication_error_message() or from send_uds_request,
+    so check for every error shape rather than just the "ERROR:" prefix.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    for prefix in (
+        "ERROR:",
+        "- Verify failed:",
+        "NRC Received",
+        "UNEXPECTED_RESPONSE_SID",
+        "ISOTP_",
+        "ECU_RESPONSE_TIMEOUT",
+    ):
+        if value.startswith(prefix):
+            return True
+    return False
+
+
 # =========================
 # Business Logic
 # =========================
@@ -314,13 +338,14 @@ def Purge_Valve_IO_Control(bus):
     req_hex = ' '.join(f'{b:02X}' for b in [0x2F] + IO_CONTROL_PAYLOAD)
     print(f"Purge Valve IO Control TX UDS: {req_hex}")
 
-    response, _uds_error = send_uds_request(bus, 0x2F, IO_CONTROL_PAYLOAD, 0x6F)
+    response, error_message = send_uds_request(bus, 0x2F, IO_CONTROL_PAYLOAD, 0x6F)
     if not response:
-        error_message = "ERROR: No response received from ECU."
+        if not error_message or error_message == "ECU_RESPONSE_TIMEOUT":
+            error_message = _communication_error_message()
         print(error_message)
         return error_message
 
-    if response[0] != 0x6F:
+    if not response or response[0] != 0x6F:
         error_message = f"ERROR: Unexpected SID: 0x{response[0]:02X} (expected 0x6F)"
         print(error_message)
         return error_message
@@ -378,9 +403,9 @@ def EMS_Purge_Valve_IO_Control(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID,"can_mask": 0x7FF,"extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         value = Purge_Valve_IO_Control(bus)
-        if isinstance(value, str) and value.startswith("ERROR:"):
+        if _is_error_value(value):
             return False, value
         if value is None:
             return False, "ERROR: Operation failed."
@@ -407,5 +432,17 @@ def EMS_Purge_Valve_IO_Control(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", EMS_Purge_Valve_IO_Control("pcan", "PCAN_USBBUS1", 500000))
+    status, result = EMS_Purge_Valve_IO_Control(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - PURGE VALVE IO CONTROL: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

@@ -304,6 +304,30 @@ def _communication_error_message():
     )
 
 
+def _is_error_value(value):
+    """True when a Read/Write helper returned an error string.
+
+    The helpers return either a value or an error message, and the message
+    may come from _communication_error_message() or from send_uds_request,
+    so check for every error shape rather than just the "ERROR:" prefix.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    for prefix in (
+        "ERROR:",
+        "- Verify failed:",
+        "NRC Received",
+        "UNEXPECTED_RESPONSE_SID",
+        "ISOTP_",
+        "ECU_RESPONSE_TIMEOUT",
+    ):
+        if value.startswith(prefix):
+            return True
+    return False
+
+
 # =========================
 # Business Logic
 # =========================
@@ -313,14 +337,14 @@ def Read_Running_Mode(bus, expected_value=0x01, timeout=1.0, poll_interval=0.2):
 
     while True:
 
-        response, _uds_error = send_uds_request(bus, 0x22, [0x10, 0xFF], 0x62)
+        response, error_message = send_uds_request(bus, 0x22, [0x10, 0xFF], 0x62)
         if response:
-            if response[0] != 0x62:
+            if not response or response[0] != 0x62:
                 print(f"Unexpected SID: 0x{response[0]:02X}")
                 time.sleep(poll_interval)
                 continue
 
-            if response[1] != 0x10 or response[2] != 0xFF:
+            if len(response) < 3 or response[1] != 0x10 or response[2] != 0xFF:
                 print(f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}")
                 time.sleep(poll_interval)
                 continue
@@ -338,7 +362,7 @@ def Read_Running_Mode(bus, expected_value=0x01, timeout=1.0, poll_interval=0.2):
                 return raw_value
 
         else:
-            print("No response received")
+            print(error_message if error_message else "No response received")
 
         if timeout is not None:
             if (time.time() - start_time) >= timeout:
@@ -351,7 +375,7 @@ def Read_Running_Mode(bus, expected_value=0x01, timeout=1.0, poll_interval=0.2):
 # =========================
 # MAIN FUNCTION
 # =========================
-def EMS_Read_Running_Mode(interface, channel, bitrate, expected_value):
+def EMS_Read_Running_Mode(interface, channel, bitrate, expected_value=0x01):
     global START_TIME, log_counter
     START_TIME  = time.perf_counter()
     log_counter = 1
@@ -397,9 +421,9 @@ def EMS_Read_Running_Mode(interface, channel, bitrate, expected_value):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID,"can_mask": 0x7FF,"extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         value = Read_Running_Mode(bus,expected_value=expected_value,timeout=1.0,poll_interval=0.2)
-        if isinstance(value, str) and value.startswith("ERROR:"):
+        if _is_error_value(value):
             return False, value
         if value is None:
             return False, "ERROR: No value received from ECU."
@@ -427,5 +451,18 @@ def EMS_Read_Running_Mode(interface, channel, bitrate, expected_value):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", EMS_Read_Running_Mode("pcan", "PCAN_USBBUS1", 500000))
+    status, result = EMS_Read_Running_Mode(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        expected_value=0x01
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ RUNNING MODE: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

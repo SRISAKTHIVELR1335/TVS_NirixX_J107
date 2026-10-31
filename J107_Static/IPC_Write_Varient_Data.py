@@ -363,7 +363,7 @@ def IPC_Write_Varient_Data(interface, channel, bitrate):
             print(error_message)
             return False, error_message
 
-        if response[1] != 0x09 or response[2] != 0x2E:
+        if len(response) < 3 or response[1] != 0x09 or response[2] != 0x2E:
             error_message = f"Unexpected DID in response: 0x{response[1]:02X}{response[2]:02X}"
             print(error_message)
             return False, error_message
@@ -396,13 +396,13 @@ def IPC_Write_Varient_Data(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     IPC_Write_Varient_Data(
+    status, result = IPC_Write_Varient_Data(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000
     )
 
     if status:
-        print(f"\nSTATUS : SUCCESS - VARIANT DATA WRITE: {result}")
+        print(f"\nSTATUS : SUCCESS - WRITE VARIENT DATA: {result}")
     else:
         print(f"\nSTATUS : FAILURE / ERROR - {result}")

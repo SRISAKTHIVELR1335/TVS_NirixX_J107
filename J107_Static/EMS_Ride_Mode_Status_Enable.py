@@ -363,7 +363,7 @@ def EMS_Ride_Mode_Status_Enable(interface, channel, bitrate):
             print(error_message)
             return False, error_message
 
-        if response[1] != 0x03 or response[2] != 0x10:
+        if len(response) < 3 or response[1] != 0x03 or response[2] != 0x10:
             error_message = f"Unexpected DID in response: 0x{response[1]:02X}{response[2]:02X}"
             print(error_message)
             return False, error_message
@@ -396,7 +396,7 @@ def EMS_Ride_Mode_Status_Enable(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     EMS_Ride_Mode_Status_Enable(
+    status, result = EMS_Ride_Mode_Status_Enable(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000

@@ -309,7 +309,7 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def read_ecu_SKU(bus):
-    response, _uds_error = send_uds_request(bus, 0x22, [0xF1, 0x91], 0x62)
+    response, error_message = send_uds_request(bus, 0x22, [0xF1, 0x91], 0x62)
 
     if not response or response[1:3] != [0xF1, 0x91]:
         return None
@@ -459,5 +459,19 @@ def VCU_Read_SKU(interface, channel, bitrate, api_url, vin):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", VCU_Read_SKU("pcan", "PCAN_USBBUS1", 500000))
+    status, api_value, ecu_value = VCU_Read_SKU(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        api_url="http://10.121.2.174:3002/vehicles/flashFile/ejo",
+        vin="SH2NB133XSP000000"
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - API: {api_value} | ECU: {ecu_value}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {ecu_value}")

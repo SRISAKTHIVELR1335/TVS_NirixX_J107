@@ -360,7 +360,7 @@ def IPC_Default_Session(interface, channel, bitrate):
             print(error_message)
             return False, error_message
 
-        if response[1] != 0x01:
+        if len(response) < 2 or response[1] != 0x01:
             error_message = f"Unexpected session in response: 0x{response[1]:02X}"
             print(error_message)
             return False, error_message
@@ -393,13 +393,13 @@ def IPC_Default_Session(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     IPC_Default_Session(
+    status, result = IPC_Default_Session(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000
     )
 
     if status:
-        print(f"\nSTATUS : SUCCESS - DEFAULT DIAGNOSTIC SESSION: {result}")
+        print(f"\nSTATUS : SUCCESS - DEFAULT SESSION: {result}")
     else:
         print(f"\nSTATUS : FAILURE / ERROR - {result}")

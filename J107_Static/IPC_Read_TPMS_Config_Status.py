@@ -323,14 +323,14 @@ def Read_TPMS_Config_Status(bus, expected_value=0x01, timeout=5.0, poll_interval
     last_received_val = None
 
     while True:
-        response, _uds_error = send_uds_request(bus, 0x22, [0xB1, 0xDB], 0x62)
+        response, error_message = send_uds_request(bus, 0x22, [0xB1, 0xDB], 0x62)
         if response:
-            if response[0] != 0x62:
+            if not response or response[0] != 0x62:
                 print(f"Unexpected SID: 0x{response[0]:02X}")
                 time.sleep(poll_interval)
                 continue
 
-            if response[1] != 0xB1 or response[2] != 0xDB:
+            if len(response) < 3 or response[1] != 0xB1 or response[2] != 0xDB:
                 print(f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}")
                 time.sleep(poll_interval)
                 continue
@@ -420,7 +420,7 @@ def IPC_Read_TPMS_Config_Status(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF, "extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         status, result = Read_TPMS_Config_Status(
             bus=bus,
             expected_value=expected_value,
@@ -450,5 +450,17 @@ def IPC_Read_TPMS_Config_Status(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Read_TPMS_Config_Status("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Read_TPMS_Config_Status(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ TPMS CONFIG STATUS: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

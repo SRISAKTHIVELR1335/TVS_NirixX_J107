@@ -309,17 +309,17 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def read_ecu_SKU(bus):
-    response, _uds_error = send_uds_request(bus, 0x22, [0xF1, 0x91], 0x62)
+    response, error_message = send_uds_request(bus, 0x22, [0xF1, 0x91], 0x62)
 
     if not response:
         print("No response received for ECU SKU read")
         return None
 
-    if response[0] != 0x62:
+    if not response or response[0] != 0x62:
         print(f"Unexpected response SID: 0x{response[0]:02X} (expected 0x62)")
         return None
 
-    if response[1] != 0xF1 or response[2] != 0x91:
+    if len(response) < 3 or response[1] != 0xF1 or response[2] != 0x91:
         print(
             f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}, "
             f"expected 0x{0xF1:02X} 0x{0xF1:02X}"
@@ -467,5 +467,19 @@ def EMS_Read_SKU(interface, channel, bitrate, api_url, vin):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", EMS_Read_SKU("pcan", "PCAN_USBBUS1", 500000))
+    status, api_value, ecu_value = EMS_Read_SKU(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        api_url="http://10.121.2.174:3002/vehicles/flashFile/ejo",
+        vin="SH2NB133XSP000000"
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - API: {api_value} | ECU: {ecu_value}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {ecu_value}")

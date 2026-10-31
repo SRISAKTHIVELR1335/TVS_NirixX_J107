@@ -441,7 +441,7 @@ def _receive_can(bus, response_id, timeout=1.0):
     return None
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and len(response) >= 2 and response[1] == 0x03:
         print("[OK] Extended Diagnostic Session")
         return True
@@ -511,10 +511,10 @@ def IPC_Read_DTC(interface, channel, bitrate):
         DTC_MAP = load_dtc_map_from_excel(EXCEL_DTC_PATH)
         if not extended_diagnostic_session(bus):
             return False, [{"code": "N/A", "description": "Extended Session Failed"}]
-        response, _uds_error = send_uds_request(bus, 0x19, [0x02, 0x8F], 0x59)
+        response, error_message = send_uds_request(bus, 0x19, [0x02, 0x8F], 0x59)
         if not response or len(response) < 3:
             return False, [{"code": "N/A", "description": "No DTC Response"}]
-        if response[0] != 0x59:
+        if not response or response[0] != 0x59:
             return False, [{"code": "N/A", "description": "Invalid UDS Response"}]
         payload = response[3:]
         if not payload:
@@ -576,5 +576,17 @@ def IPC_Read_DTC(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Read_DTC("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Read_DTC(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ DTC: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

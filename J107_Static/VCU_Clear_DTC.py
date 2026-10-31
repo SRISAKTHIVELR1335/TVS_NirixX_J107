@@ -333,6 +333,8 @@ def VCU_Clear_DTC(interface, channel, bitrate):
             print(error_message)
             return False, error_message
 
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
+
     try:
         try:
             bus = can.Bus(
@@ -359,12 +361,13 @@ def VCU_Clear_DTC(interface, channel, bitrate):
             return False, error_message
 
 
-        response, _uds_error = send_uds_request(bus, 0x14, [0xFF, 0xFF, 0xFF], 0x54)
+        response, error_message = send_uds_request(bus, 0x14, [0xFF, 0xFF, 0xFF], 0x54)
         if response:
             print("Clear DTC: PASSED\n")
             return True, "PASSED"
         else:
-            error_message = "ERROR: Clear DTC: No valid response"
+            if not error_message or error_message == "ECU_RESPONSE_TIMEOUT":
+                error_message = "ERROR: Clear DTC: No valid response"
             print(error_message)
             return False, error_message
 
@@ -389,5 +392,17 @@ def VCU_Clear_DTC(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", VCU_Clear_DTC("pcan", "PCAN_USBBUS1", 500000))
+    status, result = VCU_Clear_DTC(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - CLEAR DTC: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

@@ -309,7 +309,7 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def default_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and len(response) >= 2 and response[1] == 0x01:
         print("Default Diagnostic Session Passed.\n")
         return True
@@ -317,7 +317,7 @@ def default_diagnostic_session(bus):
     return False
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and len(response) >= 2 and response[1] == 0x03:
         print("Extended Diagnostic Session Passed.\n")
         return True
@@ -334,7 +334,7 @@ def calculate_key(seed_hb, seed_lb):
     return (key >> 8, key & 0xFF)
 
 def request_seed(bus):
-    response, _uds_error = send_uds_request(bus, 0x27, [0x01], 0x67)
+    response, error_message = send_uds_request(bus, 0x27, [0x01], 0x67)
     if response and len(response) >= 4 and response[1] == 0x01:
         seed_hb, seed_lb = response[2], response[3]
         print(f"Raw Seed Received: HB=0x{seed_hb:02X}, LB=0x{seed_lb:02X}")
@@ -343,7 +343,7 @@ def request_seed(bus):
     return None
 
 def send_key(bus, key_hb, key_lb):
-    response, _uds_error = send_uds_request(bus, 0x27, [0x02, key_hb, key_lb], 0x67)
+    response, error_message = send_uds_request(bus, 0x27, [0x02, key_hb, key_lb], 0x67)
     if response and len(response) >= 2 and response[1] == 0x02:
         print("Security Access Passed (Unlocked).\n")
         return True
@@ -435,5 +435,17 @@ def ABS_Security_Access(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", ABS_Security_Access("pcan", "PCAN_USBBUS1", 500000))
+    status, result = ABS_Security_Access(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - SECURITY ACCESS: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

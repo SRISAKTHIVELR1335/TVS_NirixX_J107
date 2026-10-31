@@ -304,6 +304,30 @@ def _communication_error_message():
     )
 
 
+def _is_error_value(value):
+    """True when a Read/Write helper returned an error string.
+
+    The helpers return either a value or an error message, and the message
+    may come from _communication_error_message() or from send_uds_request,
+    so check for every error shape rather than just the "ERROR:" prefix.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    for prefix in (
+        "ERROR:",
+        "- Verify failed:",
+        "NRC Received",
+        "UNEXPECTED_RESPONSE_SID",
+        "ISOTP_",
+        "ECU_RESPONSE_TIMEOUT",
+    ):
+        if value.startswith(prefix):
+            return True
+    return False
+
+
 # =========================
 # Business Logic
 # =========================
@@ -313,14 +337,14 @@ def Read_Mode_Selection_Status_UP(bus, expected_value=0x01, timeout=5.0, poll_in
 
     while True:
 
-        response, _uds_error = send_uds_request(bus, 0x22, [0xE1, 0xD0], 0x62)
+        response, error_message = send_uds_request(bus, 0x22, [0xE1, 0xD0], 0x62)
         if response:
-            if response[0] != 0x62:
+            if not response or response[0] != 0x62:
                 print(f"Unexpected SID: 0x{response[0]:02X}")
                 time.sleep(poll_interval)
                 continue
 
-            if response[1] != 0xE1 or response[2] != 0xD0:
+            if len(response) < 3 or response[1] != 0xE1 or response[2] != 0xD0:
                 print(f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}")
                 time.sleep(poll_interval)
                 continue
@@ -338,7 +362,7 @@ def Read_Mode_Selection_Status_UP(bus, expected_value=0x01, timeout=5.0, poll_in
                 return raw_value
 
         else:
-            print("No response received")
+            print(error_message if error_message else "No response received")
 
         if timeout is not None:
             if (time.time() - start_time) >= timeout:
@@ -397,9 +421,9 @@ def IPC_Read_Mode_Selection_Status_UP(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID,"can_mask": 0x7FF,"extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         value = Read_Mode_Selection_Status_UP(bus,expected_value=0x01,timeout=5.0,poll_interval=0.2)
-        if isinstance(value, str) and value.startswith("ERROR:"):
+        if _is_error_value(value):
             return False, value
         if value is None:
             return False, "ERROR: No value received from ECU."
@@ -427,5 +451,17 @@ def IPC_Read_Mode_Selection_Status_UP(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Read_Mode_Selection_Status_UP("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Read_Mode_Selection_Status_UP(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ MODE SELECTION STATUS UP: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

@@ -360,7 +360,7 @@ def IPC_Read_Test_Stamp(interface, channel, bitrate):
             print(error_message)
             return False, error_message
 
-        if response[1] != 0x10 or response[2] != 0xFF:
+        if len(response) < 3 or response[1] != 0x10 or response[2] != 0xFF:
             error_message = f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}"
             print(error_message)
             return False, error_message
@@ -400,13 +400,13 @@ def IPC_Read_Test_Stamp(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     IPC_Read_Test_Stamp(
+    status, result = IPC_Read_Test_Stamp(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000
     )
 
     if status:
-        print(f"\nSTATUS : SUCCESS - TEST STAMP: {result}")
+        print(f"\nSTATUS : SUCCESS - READ TEST STAMP: {result}")
     else:
         print(f"\nSTATUS : FAILURE / ERROR - {result}")

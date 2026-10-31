@@ -35,8 +35,16 @@ operator-facing blocks:
 Every CAN file carries the same self-contained helper block (`log_print`,
 `_send_can_frame`, `_receive_single_can_frame`, `receive_isotp_response`,
 `send_isotp_request`, `send_tester_present`, `send_uds_request`,
-`_communication_error_message`), so each script runs standalone with no imports
-from its siblings. `__main__` always prints a Result block.
+`_communication_error_message`, and `_is_error_value`), so each script runs
+standalone with no imports from its siblings. `__main__` always prints a
+Result block.
+
+`_is_error_value` is what the read wrappers use to decide whether a helper
+returned a value or an error. It matches `ERROR:`, `- Verify failed:`,
+`NRC Received`, `UNEXPECTED_RESPONSE_SID`, `ISOTP_` and
+`ECU_RESPONSE_TIMEOUT`. Without it a "no communication" message would be
+returned as a value and the test would be reported as PASSED with the ECU
+disconnected.
 
 `TVS_Nirix_J107.py` loads these dynamically with `getattr(module, <file name>)`,
 so the callable inside each file must keep the same name as the file. Three
@@ -49,8 +57,10 @@ files predate that rule and keep their original names:
 
 | ECU | Tester (TX) | Response (RX) |
 |-----|-------------|----------------|
-| IPC | `0x7C9`     | `0x7C1`        |
 | EMS | `0x7E0`     | `0x7E8`        |
+| ABS | `0x7E1`     | `0x7E9`        |
+| VCU | `0x7B3`     | `0x71A`        |
+| IPC | `0x7C9`     | `0x7C1`        |
 | HLC | `0x7D3`     | `0x73A`        |
 
 Default `__main__`: `interface="pcan"`, `channel="PCAN_USBBUS1"`,
@@ -108,7 +118,7 @@ their own `ABS_REQUEST_ID` / `EMS_REQUEST_ID` pair alongside the standard
 | `IPC_Read_Seat_Unlatch_Button_Status.py` | `IPC_Read_Seat_Unlatch_Button_Status` | `09 4C` | Poll until `0x40`, to decimal | `(True, 64)` |
 | `IPC_Read_Lock_Button_Status.py` | `IPC_Read_Lock_Button_Status` | `09 4C` | Poll until `0x01`, to decimal | `(True, 1)` |
 | `IPC_Read_Unlock_Button_Status.py` | `IPC_Read_Unlock_Button_Status` | `09 4C` | Poll until `0x04`, to decimal | `(True, 4)` |
-| `IPC_Warning_Lights_IO_Control.py` | `IPC_Warning_Lights_IO_Control` | `2F E1 BD 03 01 00 00` | IO control, expect `0x6F` | `True` |
+| `IPC_Warning_Light_IO_Control.py` | `IPC_Warning_Light_IO_Control` | `2F E1 BD 03 01 00 00` | IO control, expect `0x6F` | `True` |
 | `HLC_Headlamp_OFF_IO_Control.py` | `HLC_Headlamp_OFF_IO_Control` | `2F FD 00 00 00 00 00` | IO control, expect `0x6F` | `True` |
 | `HLC_High_Beam_IO_Control.py` | `HLC_High_Beam_IO_Control` | `2F FD 00 04 00 00 00` | IO control, expect `0x6F` | `True` |
 | `HLC_Low_Beam_IO_Control.py` | `HLC_Low_Beam_IO_Control` | `2F FD 00 01 00 00 00` | IO control, expect `0x6F` | `True` |
@@ -120,7 +130,8 @@ their own `ABS_REQUEST_ID` / `EMS_REQUEST_ID` pair alongside the standard
 | `EMS_Purge_Valve_IO_Control.py` | `EMS_Purge_Valve_IO_Control` | `2F A8 08 00 00 00 00` | IO control, expect `0x6F` | `True` |
 | `EMS_Actuate_FAN_Relay_IO_Control.py` | `EMS_Actuate_FAN_Relay_IO_Control` | `2F A8 06 03 45 00 00` | IO control, expect `0x6F` | `True` |
 
-Failure path for every function: `(False, None)`.
+Failure path for every function: `(False, error_message)`, where the message is the
+UDS error or one of the two `- Verify failed:` blocks.
 
 Physical signals take every data byte after SID+DID as a big-endian unsigned integer,
 then apply the formula. Temperature / voltage / photo / pressure / APS return a
@@ -170,3 +181,74 @@ ok, clutch = EMS_Read_Clutch_Status("kvaser", 0, 500000)                 # DID 1
 
 Poll scripts wait up to 5.0 s at 0.2 s intervals for the expected byte, same as
 `Read_Gear_Position` in the sample.
+
+## Sessions, DTC, security access and writes
+
+| Files | Request | Returns |
+|-------|---------|---------|
+| `EMS_/ABS_/VCU_Extended_Session.py` | `10 03` | `(True, "PASSED")` |
+| `IPC_Default_Session.py` | `10 01` | `(True, "PASSED")` |
+| `IPC_Extended_Session.py` | `10 03` | `(True, "PASSED")` |
+| `EMS_/ABS_/VCU_/IPC_Clear_DTC.py` | `14 FF FF FF` | `(True, "PASSED")`, else the UDS/NRC text |
+| `EMS_/ABS_/VCU_/IPC_Read_DTC.py` | `10 03` then `19 02 8F` | `(True, [])` when clean, `(False, [dtc, ...])` |
+| `EMS_/ABS_/VCU_/IPC_Security_Access.py` | `27 01` then `27 02` + key | `(True, "PASSED")` |
+| `ABS_Write_EOL_Mode.py` | `2E F1 F1 01` | `(True, "PASSED")` |
+| `EMS_Write_Running_Mode.py` | `2E …` | `(True, "PASSED")` |
+| `IPC_Write_Production_Mode.py` | `2E 09 53 …` | `(True, "PASSED")` |
+| `IPC_Write_Test_Stamp.py` | `2E 10 FF …` | `(True, "PASSED")` |
+| `IPC_Write_Varient_Data.py`, `IPC_Write_ABS_Variant_In_Cluster.py` | `2E 09 2E` / `2E F1 97` | `(True, "PASSED")` |
+| `IPC_Write_MAC_ID_Front_Dummy.py`, `IPC_Write_MAC_ID_Rear_Dummy.py` | `2E F1 32` | `(True, "PASSED")` |
+| `EMS_Quick_Shift_Enable.py`, `EMS_Ride_Mode_Status_Enable.py` | `2E …` | `(True, "PASSED")` |
+| `IPC_Write_TPMS_MAC_ID_Front.py`, `IPC_Write_TPMS_MAC_ID_Rear.py` | API + `2E F1 32` | needs `api_url`/`vin` |
+
+`IPC_Write_TPMS_MAC_ID_Front` / `_Rear` take an optional `api_url` and `vin`.
+Both default to empty, and the function returns
+`(False, "ERROR: VIN is required to read the TPMS MAC ID from the API.")`
+when no VIN is supplied, because the MAC ID can only come from the API.
+
+Security access key derivation per ECU:
+
+| ECU | Key |
+|-----|-----|
+| ABS | `((((hb << 8) \| lb) + 0xAEFB - 0x1111) << 4) + 0x00A0`, `& 0xFFFF` |
+| EMS | `RIPEMD160(SYMMETRIC_KEY \| seed8)[:8]` |
+| VCU | `AES-128-ECB(PRV_KEY, seed8 + FIXED_CODE)[4:12]` |
+| IPC | `VIC_Cluster.dll` `CalculateKey(seed_hex)`, XOR `0xDEADBEEF` fallback |
+
+`VIC_Cluster.dll` is a Windows PE binary, so `IPC_Security_Access` only reaches
+the DLL path on Windows; elsewhere it falls back to the XOR key.
+
+## VIN, SKU, CVN, IMEI, ICCID and versions
+
+These take `(interface, channel, bitrate, api_url, vin_number)` and always
+return three values, `(status, api_value, ecu_value)`:
+
+| File | DID | API lookup | ECU decode |
+|------|-----|------------|------------|
+| `EMS_/ABS_/VCU_/IPC_Read_VIN.py` | `F1 90` | `data.vin` | ASCII |
+| `EMS_/ABS_Read_SKU.py` | `F1 91` | `<ECU>_SKU_WRITE` → `SKU_WRITE` | hex string |
+| `IPC_/VCU_Read_SKU.py` | `F1 91` | `<ECU>_SKU_WRITE` → `SKU_WRITE` | ASCII |
+| `EMS_Read_CVN.py` | `F1 F1` | `PCM_CVN_READ` → `CVN_READ` | hex string |
+| `IPC_IMEI_Number.py` | `F1 43` | `IMEI_J107`, txbytes `[:15]` | ASCII, 15 chars |
+| `IPC_ICCID1_Number.py` | `F2 0B` | `IMEI_J107`, txbytes `[15:35]` | ASCII, 20 chars |
+| `IPC_ICCID2_Number.py` | `F2 0C` | `IMEI_J107`, txbytes `[35:55]` | ASCII, 20 chars |
+| `IPC_Read_Software_Version.py` | `F1 81` | `IPC_CVN_READ` → txbytes | bytes `[20:23]` as hex |
+| `IPC_Read_Bootloader_Version.py` | `F1 81` | `IPC_CALID_READ` → txbytes | bytes `[20:23]` as hex |
+
+The SKU readers strip the spaces out of the API `txbytes` before comparing,
+so `"A1 B2 C3 D4"` becomes `A1B2C3D4`.
+
+## Ride modes
+
+`EMS_ABS_Read_Ride_Mode_*.py` polls ABS DID `2F FF` and EMS DID `11 10` until
+both report the mode, or returns
+`(False, "TIMEOUT: Did not receive expected response from both ECUs")`.
+Each file keeps its own `timeout_sec` (default 10.0).
+
+| Mode | ABS | EMS |
+|------|-----|-----|
+| 1 Urban | `0x01` | `0x01` |
+| 2 Rain | `0x02` | `0x01` |
+| 3 Tour | `0x01` | `0x02` |
+| 4 Enduro | `0x03` | `0x03` |
+| 5 Sport | `0x01` | `0x02` |

@@ -313,16 +313,17 @@ def convert_oil_temperature_values(raw_int):
 
 def Read_Oil_Temperature_Values(bus):
 
-    response, _uds_error = send_uds_request(bus, 0x22, [0x11, 0x16], 0x62)
+    response, error_message = send_uds_request(bus, 0x22, [0x11, 0x16], 0x62)
     if not response:
-        error_message = "No response received"
+        if not error_message or error_message == "ECU_RESPONSE_TIMEOUT":
+            error_message = _communication_error_message()
         return False, error_message
 
-    if response[0] != 0x62:
+    if not response or response[0] != 0x62:
         error_message = f"Unexpected SID: 0x{response[0]:02X}"
         return False, error_message
 
-    if response[1] != 0x01 or response[2] != 0x03:
+    if len(response) < 3 or response[1] != 0x11 or response[2] != 0x16:
         error_message = f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}"
         return False, error_message
 
@@ -386,8 +387,14 @@ def EMS_Read_Oil_Temperature_Values(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID,"can_mask": 0x7FF,"extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         value = Read_Oil_Temperature_Values(bus)
+        if isinstance(value, tuple):
+            # the helper reports (False, message) when the read failed
+            if len(value) == 2 and not value[0]:
+                print(value[1])
+                return False, value[1]
+            value = value[-1]
         if value is None:
             error_message = "ERROR: ECU oil temperature response is invalid or unavailable."
             print(error_message)
@@ -416,5 +423,17 @@ def EMS_Read_Oil_Temperature_Values(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", EMS_Read_Oil_Temperature_Values("pcan", "PCAN_USBBUS1", 500000))
+    status, result = EMS_Read_Oil_Temperature_Values(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ OIL TEMPERATURE VALUES: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

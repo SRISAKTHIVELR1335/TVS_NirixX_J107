@@ -462,14 +462,13 @@ def EMS_ABS_Read_Ride_Mode_4_Enduro(interface, channel, bitrate, timeout_sec=10.
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     EMS_ABS_Read_Ride_Mode_4_Enduro(
+    status, result = EMS_ABS_Read_Ride_Mode_4_Enduro(
         interface="pcan",
         channel="PCAN_USBBUS1",
-        bitrate=500000,
-        timeout_sec=10.0
+        bitrate=500000
     )
 
     if status:
-        print(f"\nSTATUS : SUCCESS - RIDE MODE ENDURO: {result}")
+        print(f"\nSTATUS : SUCCESS - ABS READ RIDE MODE 4 ENDURO: {result}")
     else:
         print(f"\nSTATUS : FAILURE / ERROR - {result}")

@@ -313,7 +313,7 @@ def _communication_error_message():
 SYMMETRIC_KEY = bytes.fromhex('989648DE3A0AF6EEB9BA89E540A61536')
 
 def request_seed(bus):
-    response, _uds_error = send_uds_request(bus, 0x27, [0x01], 0x67)
+    response, error_message = send_uds_request(bus, 0x27, [0x01], 0x67)
     if response and len(response) >= 2 and response[1] == 0x01:
         seed = bytes(response[2:])
         if len(seed) == 8:
@@ -347,7 +347,7 @@ def calculate_key(seed, symmetric_key):
     return key_to_send
 
 def default_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and len(response) >= 2 and response[1] == 0x01:
         print("Default Diagnostic Session Passed.\n")
         return True
@@ -355,7 +355,7 @@ def default_diagnostic_session(bus):
     return False
 
 def programming_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x02], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x02], 0x50)
     if response and len(response) >= 2 and response[1] == 0x02:
         print("Programming Diagnostic Session Passed.\n")
         return True
@@ -363,7 +363,7 @@ def programming_diagnostic_session(bus):
     return False
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and len(response) >= 2 and response[1] == 0x03:
         print("Extended Diagnostic Session Passed.\n")
         return True
@@ -375,7 +375,7 @@ def send_key(bus, key_to_send):
         print("Invalid key: must be exactly 8 bytes.")
         return False
 
-    response, _uds_error = send_uds_request(bus,0x27,[0x02] + list(key_to_send),0x67)
+    response, error_message = send_uds_request(bus,0x27,[0x02] + list(key_to_send),0x67)
 
     if response and len(response) >= 2 and response[1] == 0x02:
         print("Security Access Passed\n")
@@ -474,5 +474,17 @@ def EMS_Security_Access(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", EMS_Security_Access("pcan", "PCAN_USBBUS1", 500000))
+    status, result = EMS_Security_Access(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - SECURITY ACCESS: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

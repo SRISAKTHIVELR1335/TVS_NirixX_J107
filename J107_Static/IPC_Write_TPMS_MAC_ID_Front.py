@@ -309,7 +309,7 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def default_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and response[1] == 0x01:
         print("Default Diagnostic Session Passed\n")
         return True
@@ -317,7 +317,7 @@ def default_diagnostic_session(bus):
     return False
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and response[1] == 0x03:
         print("Extended Diagnostic Session Passed\n")
         return True
@@ -344,17 +344,17 @@ def write_ecu_tpms_front_mac_id(bus, tpms_str):
 
     # Payload: DID (0xF132) + Prefix Byte (0x10) + 6 raw TPMS MAC ID bytes
     sub_payload = [0xF1, 0x32, 0x10] + tpms_bytes
-    response, _uds_error = send_uds_request(bus, 0x2E, sub_payload, 0x6E)
+    response, error_message = send_uds_request(bus, 0x2E, sub_payload, 0x6E)
 
     if not response:
         print("No response received for TPMS Front MAC ID Write")
         return False
 
-    if response[0] != 0x6E:
+    if not response or response[0] != 0x6E:
         print(f"Unexpected response SID: 0x{response[0]:02X} (expected 0x6E)")
         return False
 
-    if response[1] != 0xF1 or response[2] != 0x32:
+    if len(response) < 3 or response[1] != 0xF1 or response[2] != 0x32:
         print(f"DID mismatch in write response: 0x{response[1]:02X} 0x{response[2]:02X}")
         return False
 
@@ -392,10 +392,20 @@ def fetch_tpms_front_mac_id_from_api(api_url):
 # =========================
 # MAIN FUNCTION
 # =========================
-def IPC_Write_TPMS_MAC_ID_Front(interface, channel, bitrate, api_url, vin):
+def IPC_Write_TPMS_MAC_ID_Front(
+    interface, channel, bitrate,
+    api_url="http://10.121.2.174:3002/vehicles/flashFile/ejo", vin=""
+):
     global START_TIME, log_counter
     START_TIME  = time.perf_counter()
     log_counter = 1
+    if not vin or not vin.strip():
+        error_message = (
+            "ERROR: VIN is required to read the TPMS MAC ID from the API."
+        )
+        print(error_message)
+        return False, error_message
+
     api_url = f"{api_url.rstrip('/')}/{vin.strip()}"
     bus = None
     system_os = platform.system()
@@ -478,5 +488,19 @@ def IPC_Write_TPMS_MAC_ID_Front(interface, channel, bitrate, api_url, vin):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Write_TPMS_MAC_ID_Front("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Write_TPMS_MAC_ID_Front(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        api_url="http://10.121.2.174:3002/vehicles/flashFile/ejo",
+        vin="SH2NB133XSP000000"
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - WRITE TPMS MAC ID FRONT: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

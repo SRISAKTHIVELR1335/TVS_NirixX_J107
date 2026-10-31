@@ -304,6 +304,30 @@ def _communication_error_message():
     )
 
 
+def _is_error_value(value):
+    """True when a Read/Write helper returned an error string.
+
+    The helpers return either a value or an error message, and the message
+    may come from _communication_error_message() or from send_uds_request,
+    so check for every error shape rather than just the "ERROR:" prefix.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    for prefix in (
+        "ERROR:",
+        "- Verify failed:",
+        "NRC Received",
+        "UNEXPECTED_RESPONSE_SID",
+        "ISOTP_",
+        "ECU_RESPONSE_TIMEOUT",
+    ):
+        if value.startswith(prefix):
+            return True
+    return False
+
+
 # =========================
 # Business Logic
 # =========================
@@ -334,13 +358,13 @@ def Read_Hazard_Switch_Status(bus, expected_value=0x01, overall_timeout=5.0, exp
             return None, error_message
 
         # Send UDS read DID 0xE1D3
-        response, _uds_error = send_uds_request(bus, 0x22, [0xE1, 0xD3], 0x62)
+        response, error_message = send_uds_request(bus, 0x22, [0xE1, 0xD3], 0x62)
         valid_response = False
         raw_value = None
         status = None
 
         if response:
-            if response[0] != 0x62:
+            if not response or response[0] != 0x62:
                 print(f"Unexpected SID: 0x{response[0]:02X}")
             elif response[1] != 0xE1 or response[2] != 0xD3:
                 print(f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}")
@@ -423,7 +447,7 @@ def IPC_Read_Hazard_Switch_Status(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF, "extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         raw_value, value = Read_Hazard_Switch_Status(
             bus,
             expected_value=0x01,
@@ -431,7 +455,7 @@ def IPC_Read_Hazard_Switch_Status(interface, channel, bitrate):
             expected_value_timeout=5.0,
             poll_interval=0.2
         )
-        if isinstance(value, str) and value.startswith("ERROR:"):
+        if _is_error_value(value):
             return False, value
         if value is None:
             return False, "ERROR: No value received from ECU."
@@ -458,5 +482,17 @@ def IPC_Read_Hazard_Switch_Status(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Read_Hazard_Switch_Status("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Read_Hazard_Switch_Status(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ HAZARD SWITCH STATUS: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

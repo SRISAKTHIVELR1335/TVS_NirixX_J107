@@ -314,7 +314,7 @@ PRV_KEY = bytes.fromhex('4A9241B3B1D9F34CFF21ABEC8321EB92')
 FIXED_CODE = bytes.fromhex('82E9FC4BB79EFF2A')
 
 def default_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and len(response) >= 2 and response[1] == 0x01:
         print("Default Diagnostic Session Passed.\n")
         return True
@@ -322,7 +322,7 @@ def default_diagnostic_session(bus):
     return False
 
 def extended_diagnostic_session(bus):
-    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and len(response) >= 2 and response[1] == 0x03:
         print("Extended Diagnostic Session Passed.\n")
         return True
@@ -330,7 +330,7 @@ def extended_diagnostic_session(bus):
     return False
 
 def request_seed(bus):
-    response, _uds_error = send_uds_request(bus, 0x27, [0x01], 0x67)
+    response, error_message = send_uds_request(bus, 0x27, [0x01], 0x67)
     if response and len(response) >= 2 and response[1] == 0x01:
         seed = bytes(response[2:])
         if seed:
@@ -477,5 +477,17 @@ def VCU_Security_Access(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", VCU_Security_Access("pcan", "PCAN_USBBUS1", 500000))
+    status, result = VCU_Security_Access(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - SECURITY ACCESS: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

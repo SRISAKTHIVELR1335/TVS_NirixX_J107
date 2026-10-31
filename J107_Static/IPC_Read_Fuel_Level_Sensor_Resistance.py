@@ -308,7 +308,7 @@ def _communication_error_message():
 # Business Logic
 # =========================
 def Read_Fuel_Level_Sensor_Resistance(bus, tester_id=TESTER_ID, response_id=ECU_RESPONSE_ID):
-    response, _uds_error = send_uds_request(bus=bus,sid=0x22,sub_payload=[0xE0, 0x65],expected_positive_sid=0x62)
+    response, error_message = send_uds_request(bus=bus,sid=0x22,sub_payload=[0xE0, 0x65],expected_positive_sid=0x62)
 
     if not response:
         return False, response
@@ -376,7 +376,7 @@ def IPC_Read_Fuel_Level_Sensor_Resistance(interface, channel, bitrate):
             return False, error_message
 
 
-        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF, "extended": False}])
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
         status, result = Read_Fuel_Level_Sensor_Resistance(bus, tester_id=TESTER_ID, response_id=ECU_RESPONSE_ID)
         return status, result
 
@@ -401,5 +401,17 @@ def IPC_Read_Fuel_Level_Sensor_Resistance(interface, channel, bitrate):
             print(f"{channel} Down Complete")
 
 
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    print("Result:", IPC_Read_Fuel_Level_Sensor_Resistance("pcan", "PCAN_USBBUS1", 500000))
+    status, result = IPC_Read_Fuel_Level_Sensor_Resistance(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000
+    )
+
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ FUEL LEVEL SENSOR RESISTANCE: {result}")
+    else:
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")
