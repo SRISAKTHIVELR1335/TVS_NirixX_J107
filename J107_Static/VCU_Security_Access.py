@@ -3,99 +3,107 @@
 Created on 2026-08-19 11:51:25
 
 @author: Sri.Sakthivel
+
 """
 
-import can
-from Crypto.Cipher import AES
-import time
-from can import Message
-import platform
 import os
+import can
+import time
+import platform
+from Crypto.Cipher import AES
+from can import Message
 
 # =========================
 # Configuration
 # =========================
-TESTER_ID = 0x7B3
-ECU_RESPONSE_ID = 0x71A
-PRV_KEY = bytes.fromhex('4A9241B3B1D9F34CFF21ABEC8321EB92')
-FIXED_CODE = bytes.fromhex('82E9FC4BB79EFF2A')
+TESTER_ID        = 0x7B3
+ECU_RESPONSE_ID  = 0x71A
 
-log_counter = 1
 
+
+log_counter      = 1
+START_TIME       = time.perf_counter()
 
 # =========================
 # LOGGING
 # =========================
-def log_message(direction, msg):
+def log_print(arb_id, direction, data):
     global log_counter
-    formatted_data = ' '.join(f'{byte:02X}' for byte in msg.data)
-    time_stamp = time.time() * 1000
-    print(f"{log_counter:>3}  {time_stamp:.3f} DT {msg.arbitration_id:04X} {direction} 8  {formatted_data}")
+    elapsed_time = time.perf_counter() - START_TIME
+    data_str = ' '.join(f"{b:02X}" for b in data)
+    print(f"{log_counter:>3}  {elapsed_time:010.6f} DT {arb_id:04X} {direction} 8  {data_str}")
     log_counter += 1
 
 
 # =========================
-# CAN HELPERS
+# CAN Helpers
 # =========================
 def _send_can_frame(bus, arbitration_id, data):
     padded_data = list(data)
     while len(padded_data) < 8:
         padded_data.append(0x00)
-    msg = Message(arbitration_id=arbitration_id, data=bytearray(padded_data[:8]), is_fd=False, is_extended_id=False)
-    log_message("TX", msg)
+
+    msg = can.Message(arbitration_id=arbitration_id,data=bytearray(padded_data[:8]),is_fd=False,is_extended_id=False)
+
     bus.send(msg)
+    log_print(msg.arbitration_id, "TX", msg.data)
 
 
 def _receive_single_can_frame(bus, response_id, timeout=0.5):
     start_time = time.time()
     while time.time() - start_time < timeout:
-        remaining = timeout - (time.time() - start_time)
-        if remaining <= 0:
+        remaining_timeout = timeout - (time.time() - start_time)
+        if remaining_timeout <= 0:
             break
-        msg = bus.recv(timeout=remaining)
-        if msg and msg.arbitration_id == response_id:
-            log_message("RX", msg)
-            return msg
+
+        msg = bus.recv(timeout=remaining_timeout)
+        if msg:
+            if msg.arbitration_id == response_id:
+                log_print(msg.arbitration_id, "RX", msg.data)
+                return msg
     return None
 
 
 # =========================
-# ISO-TP RECEIVE
+# ISO-TP Receive
 # =========================
 def receive_isotp_response(bus, response_id, timeout=3.0):
-    start_time = time.time()
-    full_response_data = []
+    start_time                = time.time()
+    full_response_data        = []
     expect_consecutive_frames = False
-    seq_number_expected = 1
-    total_uds_length = 0
+    seq_number_expected       = 1
+    total_uds_length          = 0
 
     while time.time() - start_time < timeout:
-        msg = _receive_single_can_frame(bus, response_id, timeout=0.5)
+        msg = _receive_single_can_frame(bus, response_id, timeout=1.0)
         if not msg:
             continue
 
         pci_type = (msg.data[0] & 0xF0) >> 4
 
-        if pci_type == 0x0:  # Single Frame
+        # ---- Single Frame ----
+        if pci_type == 0x0:
             uds_length = msg.data[0] & 0x0F
             return list(msg.data[1:1 + uds_length])
 
-        elif pci_type == 0x1:  # First Frame
-            total_uds_length = ((msg.data[0] & 0x0F) << 8) + msg.data[1]
-            print(f"Total UDS length expected: {total_uds_length}")
-            full_response_data = list(msg.data[2:])
+        # ---- First Frame ----
+        elif pci_type == 0x1:
+            total_uds_length          = ((msg.data[0] & 0x0F) << 8) + msg.data[1]
+            full_response_data        = list(msg.data[2:])
             expect_consecutive_frames = True
-            seq_number_expected = 1
+            seq_number_expected       = 1
 
-            # Send Flow Control (CTS)
+            # ---- Flow Control (CTS) ----
             fc_frame = [0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-            time.sleep(0.005)
+            time.sleep(0.01)
             _send_can_frame(bus, TESTER_ID, fc_frame)
 
-        elif expect_consecutive_frames and pci_type == 0x2:  # Consecutive Frame
+        # ---- Consecutive Frame ----
+        elif pci_type == 0x2 and expect_consecutive_frames:
             seq_number = msg.data[0] & 0x0F
+
             if seq_number != seq_number_expected:
-                print(f"ISO-TP Sequence mismatch. Expected: {seq_number_expected}, Got: {seq_number}")
+                print(f"ISO-TP SEQ ERROR -> expected {seq_number_expected}, got {seq_number}")
                 return None
 
             full_response_data.extend(msg.data[1:])
@@ -108,112 +116,221 @@ def receive_isotp_response(bus, response_id, timeout=3.0):
 
 
 # =========================
-# ISO-TP SEND (FIXED STmin)
+# ISO-TP Send
 # =========================
 def send_isotp_request(bus, arbitration_id, data):
     total_len = len(data)
+
+    # ---- Single Frame ----
     if total_len <= 7:
         sf = [total_len] + data + [0x00] * (7 - total_len)
         _send_can_frame(bus, arbitration_id, sf)
-        return True
+        return True, None
 
-    # Send First Frame
-    ff_data = [0x10 | ((total_len >> 8) & 0x0F), total_len & 0xFF] + data[:6]
+    # ---- First Frame ----
+    ff_data = [
+        0x10 | ((total_len >> 8) & 0x0F),
+        total_len & 0xFF
+    ] + data[:6]
+
     _send_can_frame(bus, arbitration_id, ff_data)
 
-    # Wait for Flow Control
-    fc_msg = _receive_single_can_frame(bus, ECU_RESPONSE_ID, timeout=2.0)
-    if not fc_msg:
-        print("No flow control received.")
-        return False
+    # ---- Wait for Flow Control ----
+    start = time.time()
+    st_min_sec = 0.001
+    fc_received = False
 
-    pci_type = (fc_msg.data[0] & 0xF0) >> 4
-    if pci_type != 0x3:
-        print("Invalid flow control frame.")
-        return False
+    while time.time() - start < 2.0:
+        fc_msg = _receive_single_can_frame(bus, ECU_RESPONSE_ID, timeout=0.5)
 
-    flow_status = fc_msg.data[0] & 0x0F
-    if flow_status != 0:  # Not CTS
-        print(f"Flow control status not CTS: {flow_status}")
-        return False
+        if not fc_msg:
+            continue
 
-    # Calculate Separation Time (STmin) according to ISO 15765-2
-    st_min = fc_msg.data[2]
-    if st_min <= 0x7F:
-        st_min_sec = st_min / 1000.0
-    elif 0xF1 <= st_min <= 0xF9:
-        st_min_sec = (st_min - 0xF0) * 0.0001 
-    else:
-        st_min_sec = 0.001                    # Default 1ms
+        pci = (fc_msg.data[0] & 0xF0) >> 4
 
-    # Send Consecutive Frames
+        # ---- Flow Control Frame ----
+        if pci == 0x3:
+            flow_status = fc_msg.data[0] & 0x0F
+
+            # ---- Continue To Send (CTS) ----
+            if flow_status == 0x0:
+                st_min = fc_msg.data[2]
+
+                if st_min <= 0x7F:
+                    st_min_sec = st_min / 1000.0
+                elif 0xF1 <= st_min <= 0xF9:
+                    st_min_sec = (st_min - 0xF0) * 0.0001
+                else:
+                    st_min_sec = 0.001
+
+                fc_received = True
+                break
+
+            # ---- Wait ----
+            elif flow_status == 0x1:
+                continue
+
+            # ---- Overflow / Transmission Rejected ----
+            elif flow_status == 0x2:
+                return False, "ISOTP_FLOW_CONTROL_OVERFLOW"
+
+            # ---- Unknown Flow Status ----
+            else:
+                return False, f"ISOTP_FLOW_CONTROL_INVALID_STATUS_0x{flow_status:02X}"
+
+        # ---- Non-FC frame received (unexpected) ----
+        else:
+            return False, "ISOTP_UNEXPECTED_FRAME_INSTEAD_OF_FC"
+
+    if not fc_received:
+        return False, "ISOTP_FLOW_CONTROL_TIMEOUT"
+
+    # ---- Consecutive Frames ----
     remaining_data = data[6:]
     seq = 1
 
     while remaining_data:
         time.sleep(st_min_sec)
-        cf_pci = 0x20 | (seq % 16)
-        cf_data_len = min(7, len(remaining_data))
-        cf_data = [cf_pci] + remaining_data[:cf_data_len]
-        _send_can_frame(bus, arbitration_id, cf_data)
-        remaining_data = remaining_data[cf_data_len:]
-        seq += 1
 
-    return True
+        cf_data_len = min(7, len(remaining_data))
+        cf_data = [
+            0x20 | (seq & 0x0F)
+        ] + remaining_data[:cf_data_len]
+
+        _send_can_frame(bus, arbitration_id, cf_data)
+
+        remaining_data = remaining_data[cf_data_len:]
+        seq = (seq + 1) % 16
+
+    return True, None
 
 
 # =========================
-# UDS CORE
+# Tester Present (SID 0x3E)
+# =========================
+def send_tester_present(bus):
+    uds_payload   = [0x3E, 0x80]
+    isotp_sf_data = [len(uds_payload)] + uds_payload
+    _send_can_frame(bus, TESTER_ID, isotp_sf_data)
+
+
+# =========================
+# UDS Core
 # =========================
 def send_uds_request(bus, sid, sub_payload, expected_positive_sid):
     uds_payload = [sid] + sub_payload
-    retry_delay = 2.0
 
-    if not send_isotp_request(bus, TESTER_ID, uds_payload):
-        print("Failed to send ISO-TP request.")
-        return None
+    retry_delay = 3.0
+    tp_interval = 1.0
 
+    # ---- Send UDS Request ----
+    if len(uds_payload) <= 7:
+        isotp_sf_data = ([len(uds_payload)] + uds_payload + [0x00] * (7 - len(uds_payload)))
+        _send_can_frame(bus, TESTER_ID, isotp_sf_data)
+    else:
+        success, isotp_error = send_isotp_request(bus, TESTER_ID, uds_payload)
+        if not success:
+            return None, isotp_error
+
+    # ---- Receive UDS Response ----
     response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=3.0)
 
-    if response and response[0] == 0x7F:
-        if len(response) >= 3 and response[2] == 0x78:
-            print("[NRC 0x78] Response Pending - waiting...")
-            time.sleep(retry_delay)
-            return receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=5.0)
+    if not response:
+        return None, "ECU_RESPONSE_TIMEOUT"
 
-        if len(response) >= 3:
-            print(f"Negative Response: NRC 0x{response[2]:02X}")
-        return None
+    # ---- Negative Response Handling ----
+    if response[0] == 0x7F:
+        if len(response) < 3:
+            return None, "NRC Received: Invalid Response Format"
 
-    if response and response[0] == expected_positive_sid:
-        return response
+        nrc = response[2]
 
-    return None
+        # ---- NRC 0x78: Response Pending ----
+        if nrc == 0x78:
+            print("NRC Received: 0x78 (Response Pending)")
+
+            wait_start   = time.time()
+            last_tp_time = time.time()
+
+            while time.time() - wait_start < retry_delay:
+                pending_response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=0.5)
+
+                if pending_response:
+                    # ---- Positive Response ----
+                    if pending_response[0] == expected_positive_sid:
+                        #print("Positive response received. Stopping Tester Present.\n")
+                        return pending_response, None
+
+                    # ---- Another Negative Response ----
+                    if pending_response[0] == 0x7F:
+                        if len(pending_response) < 3:
+                            return None, "NRC Received: Invalid Response Format"
+
+                        pending_nrc = pending_response[2]
+
+                        if pending_nrc == 0x78:
+                            print("NRC Received: 0x78 (Response Pending)")
+                            wait_start = time.time()
+                        else:
+                            return None, f"NRC Received: 0x{pending_nrc:02X}"
+                    else:
+                        return None, f"UNEXPECTED_RESPONSE_SID: 0x{pending_response[0]:02X}"
+
+                # ---- Tester Present ----
+                if time.time() - last_tp_time >= tp_interval:
+                    send_tester_present(bus)
+                    last_tp_time = time.time()
+
+            return None, "NRC Received: 0x78 - Waited no Response Received"
+
+        # ---- Other NRC ----
+        return None, f"NRC Received: 0x{nrc:02X}"
+
+    # ---- Validate Positive Response SID ----
+    if response[0] == expected_positive_sid:
+        return response, None
+
+    return None, f"UNEXPECTED_RESPONSE_SID: 0x{response[0]:02X}"
 
 
 # =========================
-# DIAGNOSTIC SESSIONS & SECURITY
+# Error Message Helpers
 # =========================
+def _communication_error_message():
+    return (
+        "- Verify failed:\n"
+        "- No communication from ECU\n"
+        "- Check vehicle ignition status\n"
+        "- Check CAN wiring\n"
+        "- Verify baud rate"
+    )
+
+
+# =========================
+# Business Logic
+# =========================
+PRV_KEY = bytes.fromhex('4A9241B3B1D9F34CFF21ABEC8321EB92')
+
+FIXED_CODE = bytes.fromhex('82E9FC4BB79EFF2A')
+
 def default_diagnostic_session(bus):
-    response = send_uds_request(bus, 0x10, [0x01], 0x50)
+    response, _uds_error = send_uds_request(bus, 0x10, [0x01], 0x50)
     if response and len(response) >= 2 and response[1] == 0x01:
         print("Default Diagnostic Session Passed.\n")
         return True
     print("Default Diagnostic Session Failed.")
     return False
 
-
 def extended_diagnostic_session(bus):
-    response = send_uds_request(bus, 0x10, [0x03], 0x50)
+    response, _uds_error = send_uds_request(bus, 0x10, [0x03], 0x50)
     if response and len(response) >= 2 and response[1] == 0x03:
         print("Extended Diagnostic Session Passed.\n")
         return True
     print("Extended Diagnostic Session Failed.")
     return False
 
-
 def request_seed(bus):
-    response = send_uds_request(bus, 0x27, [0x01], 0x67)
+    response, _uds_error = send_uds_request(bus, 0x27, [0x01], 0x67)
     if response and len(response) >= 2 and response[1] == 0x01:
         seed = bytes(response[2:])
         if seed:
@@ -222,7 +339,6 @@ def request_seed(bus):
         print("Invalid seed length.")
     print("Seed Request Failed.")
     return None
-
 
 def encrypt_seed(seed, prv_key, fixed_code):
     if not seed:
@@ -248,7 +364,6 @@ def encrypt_seed(seed, prv_key, fixed_code):
     print(f"Sliced Key to Send: {key_to_send.hex()}")
     print("AES Encryption Passed.\n")
     return encrypted_full, key_to_send
-
 
 def send_key(bus, encrypted_key_to_send):
     if not encrypted_key_to_send or len(encrypted_key_to_send) != 8:
@@ -277,77 +392,90 @@ def send_key(bus, encrypted_key_to_send):
     print("Security Access Failed: Invalid or No Response.")
     return False
 
-
 # =========================
 # MAIN FUNCTION
 # =========================
 def VCU_Security_Access(interface, channel, bitrate):
+    global START_TIME, log_counter
+    START_TIME  = time.perf_counter()
+    log_counter = 1
     bus = None
-    OS = platform.system()
+    system_os = platform.system()
+
+    # ---- Linux SocketCAN Setup ----
+    if system_os == "Linux":
+        try:
+            interface = "socketcan"
+            channel = "can0" if not channel else channel
+            os.system(f"sudo ip link set {channel} down")
+            os.system(f"sudo ip link set {channel} type can bitrate {int(bitrate)}")
+            os.system(f"sudo ip link set {channel} up")
+        except Exception as e:
+            error_message = f"Linux SocketCAN setup error: {e}"
+            print(error_message)
+            return False, error_message
 
     try:
-        if OS == "Linux":
-            interface = "socketcan"
-            channel = "can0"
-            os.system(f"sudo ip link set {channel} down")
-            os.system(f"sudo ip link set {channel} type can bitrate {bitrate}")
-            os.system(f"sudo ip link set {channel} up")
-            bus = can.interface.Bus(interface=interface, channel=channel)
-        elif OS.upper() == "WINDOWS":
-            try:
-                bus = can.interface.Bus(interface=interface, channel=channel, bitrate=bitrate, fd=False)
-            except can.CanInitializationError:
-                error_message = "ERROR: PCAN is not connected or not initialized."
-                print(error_message)
-                return False, error_message
+        try:
+            bus = can.Bus(
+                interface=interface,
+                channel=channel,
+                bitrate=int(bitrate),
+                fd=False
+            )
+        except (can.CanInitializationError, can.CanError) as e:
+            error_msg_str = str(e).lower()
+            if any(term in error_msg_str for term in ["not been initialized", "invalid", "handle", "pcan"]):
+                error_message = (
+                    "- Verify failed:\n"
+                    "- PCAN USB is not connected\n"
+                    "- Check PCAN driver installation\n"
+                    "- Verify PCAN channel selection"
+                )
+            elif any(term in error_msg_str for term in ["heavy", "warning", "bus-off"]):
+                error_message = _communication_error_message()
+            else:
+                error_message = f"CAN Initialization Error: {e}"
+
+            print(error_message)
+            return False, error_message
+
 
         bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
-
-        # Step 1: Default Session
         if not default_diagnostic_session(bus):
             return False, "Failed to enter default diagnostic session."
-
-        # Step 2: Extended Session
         if not extended_diagnostic_session(bus):
             return False, "Failed to enter extended diagnostic session."
-
-        # Step 3: Request Seed
         seed = request_seed(bus)
         if not seed:
             return False, "Failed to retrieve seed from ECU."
-
-        # Step 4: Calculate Key
         _, key_to_send = encrypt_seed(seed, PRV_KEY, FIXED_CODE)
         if not key_to_send:
             return False, "Failed to encrypt seed and generate key."
-
-        # Step 5: Send Key
         if not send_key(bus, key_to_send):
             return False, "Failed to send key / Security Access Denied."
-
         return True, "PASSED"
 
+
     except can.CanError as e:
-        error_msg = str(e).lower()
-        if "not been initialized" in error_msg:
-            error_message = "ERROR: PCAN is not connected or not initialized."
-        elif "heavy" in error_msg or "warning" in error_msg:
-            error_message = "ERROR: No communication from ECU. Check ECU power, wiring and baud rate."
-        else:
-            error_message = f"CAN Error: {e}"
+        error_message = f"CAN Error: {e}"
         print(error_message)
         return False, error_message
 
     except Exception as e:
-        error_message = f"Unexpected Error: {e}"
+        error_message = f"ECU Error: {e}"
         print(error_message)
         return False, error_message
 
     finally:
         if bus:
             bus.shutdown()
-            print("CAN bus shutdown completed.")
+            print("CAN channel closed")
+
+        if system_os == "Linux" and channel:
+            os.system(f"sudo ip link set {channel} down")
+            print(f"{channel} Down Complete")
 
 
 if __name__ == "__main__":
-    VCU_Security_Access(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+    print("Result:", VCU_Security_Access("pcan", "PCAN_USBBUS1", 500000))
