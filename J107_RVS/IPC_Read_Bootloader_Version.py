@@ -1,30 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-Created on Wed Feb 18 12:56:59 2026
+Created on 2026-08-19 11:51:25
 
 @author: Sri.Sakthivel
 
 """
 
+import os
 import can
 import time
-import requests
-import os
 import platform
+import requests
 
 # =========================
 # Configuration
 # =========================
-TESTER_ID       = 0x7C9
-ECU_RESPONSE_ID = 0x7C1
+TESTER_ID        = 0x7C9
+ECU_RESPONSE_ID  = 0x7C1
 
+
+log_counter      = 1
+START_TIME       = time.perf_counter()
 
 # =========================
 # LOGGING
 # =========================
-def log_message(direction, msg):
-    formatted_data = ' '.join(f'{byte:02X}' for byte in msg.data)
-    print(f"{direction} {msg.arbitration_id:04X}: {formatted_data}")
+def log_print(arb_id, direction, data):
+    global log_counter
+    elapsed_time = time.perf_counter() - START_TIME
+    data_str = ' '.join(f"{b:02X}" for b in data)
+    print(f"{log_counter:>3}  {elapsed_time:010.6f} DT {arb_id:04X} {direction} 8  {data_str}")
+    log_counter += 1
 
 
 # =========================
@@ -35,14 +41,10 @@ def _send_can_frame(bus, arbitration_id, data):
     while len(padded_data) < 8:
         padded_data.append(0x00)
 
-    msg = can.Message(
-        arbitration_id=arbitration_id,
-        data=bytearray(padded_data[:8]),
-        is_fd=False,
-        is_extended_id=False
-    )
+    msg = can.Message(arbitration_id=arbitration_id,data=bytearray(padded_data[:8]),is_fd=False,is_extended_id=False)
+
     bus.send(msg)
-    log_message("TX", msg)
+    log_print(msg.arbitration_id, "TX", msg.data)
 
 
 def _receive_single_can_frame(bus, response_id, timeout=0.5):
@@ -55,7 +57,7 @@ def _receive_single_can_frame(bus, response_id, timeout=0.5):
         msg = bus.recv(timeout=remaining_timeout)
         if msg:
             if msg.arbitration_id == response_id:
-                log_message("RX", msg)
+                log_print(msg.arbitration_id, "RX", msg.data)
                 return msg
     return None
 
@@ -99,7 +101,7 @@ def receive_isotp_response(bus, response_id, timeout=3.0):
             seq_number = msg.data[0] & 0x0F
 
             if seq_number != seq_number_expected:
-                print(f"ISO-TP SEQ ERROR → expected {seq_number_expected}, got {seq_number}")
+                print(f"ISO-TP SEQ ERROR -> expected {seq_number_expected}, got {seq_number}")
                 return None
 
             full_response_data.extend(msg.data[1:])
@@ -121,50 +123,84 @@ def send_isotp_request(bus, arbitration_id, data):
     if total_len <= 7:
         sf = [total_len] + data + [0x00] * (7 - total_len)
         _send_can_frame(bus, arbitration_id, sf)
-        return True
+        return True, None
 
     # ---- First Frame ----
-    ff_data = [0x10 | ((total_len >> 8) & 0x0F), total_len & 0xFF] + data[:6]
+    ff_data = [
+        0x10 | ((total_len >> 8) & 0x0F),
+        total_len & 0xFF
+    ] + data[:6]
+
     _send_can_frame(bus, arbitration_id, ff_data)
 
-    # ---- Wait Flow Control ----
-    start      = time.time()
+    # ---- Wait for Flow Control ----
+    start = time.time()
     st_min_sec = 0.001
+    fc_received = False
 
     while time.time() - start < 2.0:
         fc_msg = _receive_single_can_frame(bus, ECU_RESPONSE_ID, timeout=0.5)
+
         if not fc_msg:
             continue
 
         pci = (fc_msg.data[0] & 0xF0) >> 4
-        if pci == 0x3:
-            st_min = fc_msg.data[2]
 
-            if st_min <= 0x7F:
-                st_min_sec = st_min / 1000.0
-            elif 0xF1 <= st_min <= 0xF9:
-                st_min_sec = (st_min - 0xF0) * 0.0001
+        # ---- Flow Control Frame ----
+        if pci == 0x3:
+            flow_status = fc_msg.data[0] & 0x0F
+
+            # ---- Continue To Send (CTS) ----
+            if flow_status == 0x0:
+                st_min = fc_msg.data[2]
+
+                if st_min <= 0x7F:
+                    st_min_sec = st_min / 1000.0
+                elif 0xF1 <= st_min <= 0xF9:
+                    st_min_sec = (st_min - 0xF0) * 0.0001
+                else:
+                    st_min_sec = 0.001
+
+                fc_received = True
+                break
+
+            # ---- Wait ----
+            elif flow_status == 0x1:
+                continue
+
+            # ---- Overflow / Transmission Rejected ----
+            elif flow_status == 0x2:
+                return False, "ISOTP_FLOW_CONTROL_OVERFLOW"
+
+            # ---- Unknown Flow Status ----
             else:
-                st_min_sec = 0.001
-            break
-    else:
-        print("No Flow Control received")
-        return False
+                return False, f"ISOTP_FLOW_CONTROL_INVALID_STATUS_0x{flow_status:02X}"
+
+        # ---- Non-FC frame received (unexpected) ----
+        else:
+            return False, "ISOTP_UNEXPECTED_FRAME_INSTEAD_OF_FC"
+
+    if not fc_received:
+        return False, "ISOTP_FLOW_CONTROL_TIMEOUT"
 
     # ---- Consecutive Frames ----
     remaining_data = data[6:]
-    seq            = 1
+    seq = 1
 
     while remaining_data:
         time.sleep(st_min_sec)
-        cf_pci      = 0x20 | (seq & 0x0F)
-        cf_data_len = min(7, len(remaining_data))
-        cf_data     = [cf_pci] + remaining_data[:cf_data_len]
-        _send_can_frame(bus, arbitration_id, cf_data)
-        remaining_data = remaining_data[cf_data_len:]
-        seq            = (seq + 1) % 16
 
-    return True
+        cf_data_len = min(7, len(remaining_data))
+        cf_data = [
+            0x20 | (seq & 0x0F)
+        ] + remaining_data[:cf_data_len]
+
+        _send_can_frame(bus, arbitration_id, cf_data)
+
+        remaining_data = remaining_data[cf_data_len:]
+        seq = (seq + 1) % 16
+
+    return True, None
 
 
 # =========================
@@ -181,101 +217,121 @@ def send_tester_present(bus):
 # =========================
 def send_uds_request(bus, sid, sub_payload, expected_positive_sid):
     uds_payload = [sid] + sub_payload
-    max_retries = 0
+
     retry_delay = 3.0
     tp_interval = 1.0
 
+    # ---- Send UDS Request ----
     if len(uds_payload) <= 7:
-        isotp_sf_data = [len(uds_payload)] + uds_payload
+        isotp_sf_data = ([len(uds_payload)] + uds_payload + [0x00] * (7 - len(uds_payload)))
         _send_can_frame(bus, TESTER_ID, isotp_sf_data)
     else:
-        if not send_isotp_request(bus, TESTER_ID, uds_payload):
-            print("Failed to send ISO-TP request.")
-            return None
+        success, isotp_error = send_isotp_request(bus, TESTER_ID, uds_payload)
+        if not success:
+            return None, isotp_error
 
-    for attempt in range(max_retries + 1):
-        response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=3.0)
+    # ---- Receive UDS Response ----
+    response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=3.0)
 
-        if response and response[0] == 0x7F:
-            if len(response) >= 3 and response[2] == 0x78:
-                print("[NRC]-0x78-Response Pending")
-                wait_start   = time.time()
-                last_tp_time = time.time()
+    if not response:
+        return None, "ECU_RESPONSE_TIMEOUT"
 
-                while time.time() - wait_start < retry_delay:
-                    pending_response = receive_isotp_response(
-                        bus, ECU_RESPONSE_ID, timeout=0.5)
+    # ---- Negative Response Handling ----
+    if response[0] == 0x7F:
+        if len(response) < 3:
+            return None, "NRC Received: Invalid Response Format"
 
-                    if pending_response:
-                        if pending_response[0] == expected_positive_sid:
-                            print("Positive response received. Stopping Tester Present.\n")
-                            return pending_response
-                        if pending_response[0] == 0x7F and len(pending_response) >= 3:
-                            nrc = pending_response[2]
-                            if nrc == 0x78:
-                                print("[NRC] 0x78 Received again - Still Pending")
-                            else:
-                                print(f"Negative Response during wait: NRC 0x{nrc:02X}")
-                                return None
+        nrc = response[2]
 
-                    if time.time() - last_tp_time >= tp_interval:
-                        send_tester_present(bus)
-                        last_tp_time = time.time()
+        # ---- NRC 0x78: Response Pending ----
+        if nrc == 0x78:
+            print("NRC Received: 0x78 (Response Pending)")
 
-                print("No positive response after NRC 0x78.")
-                return None
+            wait_start   = time.time()
+            last_tp_time = time.time()
 
-            if len(response) >= 3:
-                print(f"Negative Response: NRC 0x{response[2]:02X}")
-            return None
+            while time.time() - wait_start < retry_delay:
+                pending_response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=0.5)
 
-        if response and response[0] == expected_positive_sid:
-            return response
+                if pending_response:
+                    # ---- Positive Response ----
+                    if pending_response[0] == expected_positive_sid:
+                        #print("Positive response received. Stopping Tester Present.\n")
+                        return pending_response, None
 
-        print("No valid response received.")
-        return None
+                    # ---- Another Negative Response ----
+                    if pending_response[0] == 0x7F:
+                        if len(pending_response) < 3:
+                            return None, "NRC Received: Invalid Response Format"
 
-    print("No response received.")
-    return None
+                        pending_nrc = pending_response[2]
 
+                        if pending_nrc == 0x78:
+                            print("NRC Received: 0x78 (Response Pending)")
+                            wait_start = time.time()
+                        else:
+                            return None, f"NRC Received: 0x{pending_nrc:02X}"
+                    else:
+                        return None, f"UNEXPECTED_RESPONSE_SID: 0x{pending_response[0]:02X}"
 
-# =========================
-# Sessions
-# =========================
-def default_diagnostic_session(bus):
-    response = send_uds_request(bus, 0x10, [0x01], 0x50)
-    if response and response[1] == 0x01:
-        print("Default Diagnostic Session Passed\n")
-        return True
-    print("Default Diagnostic Session Failed\n")
-    return False
+                # ---- Tester Present ----
+                if time.time() - last_tp_time >= tp_interval:
+                    send_tester_present(bus)
+                    last_tp_time = time.time()
 
+            return None, "NRC Received: 0x78 - Waited no Response Received"
 
-def extended_diagnostic_session(bus):
-    response = send_uds_request(bus, 0x10, [0x03], 0x50)
-    if response and response[1] == 0x03:
-        print("Extended Diagnostic Session Passed\n")
-        return True
-    print("Extended Diagnostic Session Failed\n")
-    return False
+        # ---- Other NRC ----
+        return None, f"NRC Received: 0x{nrc:02X}"
+
+    # ---- Validate Positive Response SID ----
+    if response[0] == expected_positive_sid:
+        return response, None
+
+    return None, f"UNEXPECTED_RESPONSE_SID: 0x{response[0]:02X}"
 
 
 # =========================
-# Bootloader Version Read Function (ECU)
+# Error Message Helpers
+# =========================
+def _communication_error_message():
+    return (
+        "- Verify failed:\n"
+        "- No communication from ECU\n"
+        "- Check vehicle ignition status\n"
+        "- Check CAN wiring\n"
+        "- Verify baud rate"
+    )
+
+# =========================
+# Read Bootloader Version From ECU
 # =========================
 def read_ecu_Bootloader_Version(bus):
-    response = send_uds_request(bus, 0x22, [0xF1, 0x81], 0x62)
+    response, error_message = send_uds_request(bus, 0x22, [0xF1, 0x81], 0x62)
 
-    if not response or response[1:3] != [0xF1, 0x81]:
+    if response is None:
+        print("No response received for Bootloader Version read")
+        return None
+
+    if response[0] != 0x62:
+        print(f"Unexpected response SID: 0x{response[0]:02X} (expected 0x62)")
+        return None
+
+    if response[1] != 0xF1 or response[2] != 0x81:
+        print(
+            f"DID mismatch: got 0x{response[1]:02X} 0x{response[2]:02X}, "
+            f"expected 0xF1 0x81"
+        )
         return None
 
     raw_bytes = response[20:23]
 
     if not raw_bytes:
+        print("Response contained no data bytes.")
         return None
 
-    ecu_Bootloader_version = ''.join(f'{b:02X}' for b in raw_bytes)
-    return ecu_Bootloader_version
+    value = ''.join(f'{b:02X}' for b in raw_bytes)
+    return value
 
 
 # =========================
@@ -295,18 +351,24 @@ def fetch_Bootloader_Version_from_api(api_url):
                     if config.get("refname") == "IPC_CALID_READ":
                         messages = config.get("messages", [])
                         if messages and "txbytes" in messages[0]:
-                            api_Bootloader_version = messages[0]["txbytes"].strip()
-                            if api_Bootloader_version:
-                                return api_Bootloader_version, None
-
-        return None, "IPC_CVN_READ entry not found in API response"
+                            api_bootloader_version = messages[0]["txbytes"].strip()
+                            if api_bootloader_version:
+                                return api_bootloader_version, None
+        error_message = "IPC_CALID_READ entry not found in API response"
+        return None, error_message
 
     except requests.exceptions.Timeout:
-        return None, "API request timed out"
+        error_message = "API request timed out"
+        return None, error_message
+
     except requests.exceptions.HTTPError as e:
-        return None, f"API HTTP error: {e}"
+        error_message = f"API HTTP error: {e.response.status_code} - {e.response.reason}"
+        return None, error_message
+
     except Exception as e:
-        return None, f"API error: {e}"
+        error_message = f"API error: {e}"
+        return None, error_message
+
 
 
 # =========================
@@ -315,28 +377,35 @@ def fetch_Bootloader_Version_from_api(api_url):
 def IPC_Bootloader_Version_Number(interface, channel, bitrate, api_url, vin_number):
     api_url = f"{api_url.rstrip('/')}/{vin_number.strip()}"
 
-    bus                  = None
-    OS      = platform.system()
-    api_Bootloader_version = None             
+    global START_TIME, log_counter
+    START_TIME  = time.perf_counter()
+    log_counter = 1
+    bus = None
+    system_os = platform.system()
+    api_bootloader_version = None
+
     try:
-        api_Bootloader_version, api_error = fetch_Bootloader_Version_from_api(api_url)
+        api_bootloader_version, api_error = fetch_Bootloader_Version_from_api(api_url)
 
         if api_error:
             print(api_error)
-            return False, api_error, None  
+            return False, None, api_error
 
-        print(f"API Bootloader Version: {api_Bootloader_version}")
+        print(f"API Bootloader Version: {api_bootloader_version}")
 
-        if OS == "Linux":
-            interface = "socketcan"
-            channel = "can0"
+        # ---- Linux SocketCAN Setup ----
+        if system_os == "Linux":
+            try:
+                interface = "socketcan"
+                channel = "can0" if not channel else channel
+                os.system(f"sudo ip link set {channel} down")
+                os.system(f"sudo ip link set {channel} type can bitrate {int(bitrate)}")
+                os.system(f"sudo ip link set {channel} up")
+            except Exception as e:
+                error_message = f"Linux SocketCAN setup error: {e}"
+                print(error_message)
+                return False, api_bootloader_version, error_message
 
-            os.system(f"sudo ip link set {channel} down")
-            os.system(f"sudo ip link set {channel} type can bitrate {bitrate}")
-            os.system(f"sudo ip link set {channel} up")
-
-        elif OS.upper() == "WINDOWS":
-            pass
         try:
             bus = can.Bus(
                 interface=interface,
@@ -344,54 +413,71 @@ def IPC_Bootloader_Version_Number(interface, channel, bitrate, api_url, vin_numb
                 bitrate=int(bitrate),
                 fd=False
             )
-        except can.CanInitializationError:
-            error_message = "ERROR: PCAN is not connected or not initialized."
+        except (can.CanInitializationError, can.CanError) as e:
+            error_msg_str = str(e).lower()
+            if any(term in error_msg_str for term in ["not been initialized", "invalid", "handle", "pcan"]):
+                error_message = (
+                    "- Verify failed:\n"
+                    "- PCAN USB is not connected\n"
+                    "- Check PCAN driver installation\n"
+                    "- Verify PCAN channel selection"
+                )
+            elif any(term in error_msg_str for term in ["heavy", "warning", "bus-off"]):
+                error_message = _communication_error_message()
+            else:
+                error_message = f"CAN Initialization Error: {e}"
+
             print(error_message)
-            return False, api_Bootloader_version, error_message 
+            return False, api_bootloader_version, error_message
 
         bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
 
+        # ---- Step 1: Read Bootloader Version From ECU ----
+        ecu_bootloader_version = read_ecu_Bootloader_Version(bus)
 
-        ecu_Bootloader_version = read_ecu_Bootloader_Version(bus)
-
-        if ecu_Bootloader_version is None:
+        if ecu_bootloader_version is None:
             error_message = "ERROR: ECU Bootloader Version read failed."
             print(error_message)
-            return False, api_Bootloader_version, error_message
+            return False, api_bootloader_version, error_message
 
-        print(f"ECU Bootloader Version: {ecu_Bootloader_version}")
+        print(f"ECU Bootloader Version: {ecu_bootloader_version}")
 
-        ecu_clean = ecu_Bootloader_version.strip().upper()
-        api_clean = api_Bootloader_version.strip().upper()
+        ecu_clean = ecu_bootloader_version.strip().upper()
+        api_clean = api_bootloader_version.strip().upper()
 
         if ecu_clean == api_clean:
             print("Bootloader Version MATCHED\n")
-            return True, api_Bootloader_version, ecu_Bootloader_version
+            return True, api_bootloader_version, ecu_bootloader_version
         else:
             print("Bootloader Version MISMATCHED\n")
-            return False, api_Bootloader_version, ecu_Bootloader_version
+            return False, api_bootloader_version, ecu_bootloader_version
+
 
     except can.CanError as e:
         error_message = f"CAN Error: {e}"
         print(error_message)
-        return False, api_Bootloader_version, error_message
+        return False, api_bootloader_version, error_message
 
     except Exception as e:
         error_message = f"ECU Error: {e}"
         print(error_message)
-        return False, api_Bootloader_version, error_message 
+        return False, api_bootloader_version, error_message
 
     finally:
         if bus:
             bus.shutdown()
             print("CAN channel closed")
 
+        if system_os == "Linux" and channel:
+            os.system(f"sudo ip link set {channel} down")
+            print(f"{channel} Down Complete")
+
 
 # =========================
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    success, api_Bootloader_version, ecu_Bootloader_version = IPC_Bootloader_Version_Number(
+    status, api_value, result =     IPC_Bootloader_Version_Number(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000,
@@ -399,10 +485,7 @@ if __name__ == "__main__":
         vin_number="SH2NB133XTP900090"
     )
 
-    if success:
-        print("STATUS: SUCCESS - Bootloader Version MATCH")
+    if status:
+        print(f"\nSTATUS : SUCCESS - Bootloader Version MATCH")
     else:
-        print("STATUS: FAILURE / MISMATCH")
-
-    print(f"API Bootloader Version  : {api_Bootloader_version}")
-    print(f"ECU Bootloader Version  : {ecu_Bootloader_version}")
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")

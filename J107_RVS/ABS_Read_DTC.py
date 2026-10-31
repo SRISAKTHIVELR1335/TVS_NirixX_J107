@@ -6,178 +6,60 @@ Created on 2026-08-19 11:51:25
 
 """
 
+import os
 import can
 import time
-from can import Message
-import pandas as pd
-import os
+import platform
 import sys
+import pandas as pd
 
 # =========================
-# CONFIG
+# Configuration
 # =========================
-TESTER_ID = 0x7E1
-ECU_RESPONSE_ID = 0x7E9
+TESTER_ID        = 0x7E1
+ECU_RESPONSE_ID  = 0x7E9
 
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS  # PyInstaller temp folder
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
 
-EXCEL_DTC_PATH = resource_path(os.path.join("dtc_error_code", "ABS_DTC.xlsx"))
+log_counter      = 1
+START_TIME       = time.perf_counter()
 
 # =========================
-# EXCEL DTC MAPPING (WITH DTC_Required SUPPORT)
+# LOGGING
 # =========================
-def safe_str(value, fallback="Unknown Description"):
-    if value is None:
-        return fallback
-    if isinstance(value, float) and pd.isna(value):
-        return fallback
-    try:
-        result = str(value).strip()
-        return result if result else fallback
-    except Exception:
-        return fallback
-
-
-def load_dtc_map_from_excel(excel_path):
-    if not os.path.exists(excel_path):
-        print(f"[ERROR] Excel file not found: {excel_path}")
-        return {}
-
-    try:
-        df = pd.read_excel(excel_path)
-        print(f"[DEBUG] Excel columns found: {list(df.columns)}")
-
-        # Normalize column names
-        df.columns = df.columns.str.strip()
-
-        # Check for required columns
-        required_columns = ['DTC Code', 'Description', 'DTC_Required']
-        for col in required_columns:
-            if col not in df.columns:
-                print(f"[ERROR] Missing required column: '{col}'")
-                print(f"[ERROR] Available columns: {list(df.columns)}")
-                return {}
-
-        # Normalize values â€” convert before iterating to avoid per-row NaN issues
-        df['DTC Code']     = df['DTC Code'].astype(str).str.strip().str.upper()
-        df['Description']  = df['Description'].apply(
-            lambda v: safe_str(v, fallback="No Description")
-        )
-        df['DTC_Required'] = df['DTC_Required'].apply(normalize_boolean_value)
-
-        # Build dictionary with duplicate handling
-        dtc_map        = {}
-        duplicate_count = 0
-
-        for _, row in df.iterrows():
-            code          = row['DTC Code']
-            desc          = row['Description']   # Now always a clean string
-            dtc_required  = row['DTC_Required']
-
-            # Skip completely empty / NaN DTC codes
-            if code in ('', 'NAN', 'NONE'):
-                print(f"[WARNING] Skipping row with invalid DTC Code: '{code}'")
-                continue
-
-            if code in dtc_map:
-                # Safe concatenation â€” both sides are guaranteed strings
-                existing_desc = dtc_map[code]['description']
-                dtc_map[code]['description'] = f"{existing_desc} | {desc}"
-                duplicate_count += 1
-            else:
-                dtc_map[code] = {
-                    "description": desc,
-                    "dtc_required": dtc_required
-                }
-
-        # Preview first 5 entries
-        for i, (code, info) in enumerate(dtc_map.items()):
-            if i >= 5:
-                break
-            preview = info['description'][:40]
-            print(f"  {code} â†’ {preview}... | Required: {info['dtc_required']}")
-
-        print(f"[INFO] Loaded {len(dtc_map)} unique DTC codes from Excel")
-        if duplicate_count > 0:
-            print(f"[INFO] Combined {duplicate_count} duplicate entries")
-
-        # Summary
-        required_count     = sum(1 for v in dtc_map.values() if v['dtc_required'] is True)
-        not_required_count = sum(1 for v in dtc_map.values() if v['dtc_required'] is False)
-        print(f"[INFO] DTC_Required=True  (PASS if occurs): {required_count}")
-        print(f"[INFO] DTC_Required=False (FAIL if occurs): {not_required_count}")
-
-        return dtc_map
-
-    except Exception as e:
-        print(f"[ERROR] Failed to read Excel: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
-
-
-def normalize_boolean_value(value):
-    """Convert various truthy/falsy representations to bool."""
-    if isinstance(value, float) and pd.isna(value):
-        return False
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, (int, float)):
-        return bool(value)
-
-    if isinstance(value, str):
-        value_lower = value.strip().lower()
-        if value_lower in ('true', 'pass', 'yes', '1', 'p', 'y', 't'):
-            return True
-        if value_lower in ('false', 'fail', 'no', '0', 'f', 'n'):
-            return False
-
-    print(f"[WARNING] Unknown DTC_Required value: '{value}', defaulting to False")
-    return False
+def log_print(arb_id, direction, data):
+    global log_counter
+    elapsed_time = time.perf_counter() - START_TIME
+    data_str = ' '.join(f"{b:02X}" for b in data)
+    print(f"{log_counter:>3}  {elapsed_time:010.6f} DT {arb_id:04X} {direction} 8  {data_str}")
+    log_counter += 1
 
 
 # =========================
-# Logging
-# =========================
-def log_message(direction, msg):
-    formatted_data = ' '.join(f'{byte:02X}' for byte in msg.data)
-    print(f"{direction} {msg.arbitration_id:04X}: {formatted_data}")
-
-
-# =========================
-# CAN HELPERS
+# CAN Helpers
 # =========================
 def _send_can_frame(bus, arbitration_id, data):
-    padded = list(data)
-    while len(padded) < 8:
-        padded.append(0x00)
+    padded_data = list(data)
+    while len(padded_data) < 8:
+        padded_data.append(0x00)
 
-    msg = Message(
-        arbitration_id=arbitration_id,
-        data=bytearray(padded[:8]),
-        is_extended_id=False
-    )
-    log_message("TX", msg)
+    msg = can.Message(arbitration_id=arbitration_id,data=bytearray(padded_data[:8]),is_fd=False,is_extended_id=False)
+
     bus.send(msg)
+    log_print(msg.arbitration_id, "TX", msg.data)
 
 
-def _receive_can(bus, response_id, timeout=1.0):
+def _receive_single_can_frame(bus, response_id, timeout=0.5):
     start_time = time.time()
     while time.time() - start_time < timeout:
         remaining_timeout = timeout - (time.time() - start_time)
         if remaining_timeout <= 0:
             break
+
         msg = bus.recv(timeout=remaining_timeout)
-        if msg and msg.arbitration_id == response_id:
-            log_message("RX", msg)
-            return msg
+        if msg:
+            if msg.arbitration_id == response_id:
+                log_print(msg.arbitration_id, "RX", msg.data)
+                return msg
     return None
 
 
@@ -185,40 +67,49 @@ def _receive_can(bus, response_id, timeout=1.0):
 # ISO-TP Receive
 # =========================
 def receive_isotp_response(bus, response_id, timeout=3.0):
-    start        = time.time()
-    full_data    = []
-    expected_len = 0
-    seq_expected = 1
-    expecting_cf = False
+    start_time                = time.time()
+    full_response_data        = []
+    expect_consecutive_frames = False
+    seq_number_expected       = 1
+    total_uds_length          = 0
 
-    while time.time() - start < timeout:
-        msg = _receive_can(bus, response_id, timeout=1.0)
+    while time.time() - start_time < timeout:
+        msg = _receive_single_can_frame(bus, response_id, timeout=1.0)
         if not msg:
             continue
 
-        pci        = msg.data[0]
-        frame_type = (pci & 0xF0) >> 4
+        pci_type = (msg.data[0] & 0xF0) >> 4
 
-        if frame_type == 0x0:                        # Single Frame
-            length = pci & 0x0F
-            return list(msg.data[1:1 + length])
+        # ---- Single Frame ----
+        if pci_type == 0x0:
+            uds_length = msg.data[0] & 0x0F
+            return list(msg.data[1:1 + uds_length])
 
-        elif frame_type == 0x1:
-            expected_len = ((pci & 0x0F) << 8) | msg.data[1]
-            full_data    = list(msg.data[2:])
-            expecting_cf = True
-            fc = [0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-            _send_can_frame(bus, TESTER_ID, fc)
+        # ---- First Frame ----
+        elif pci_type == 0x1:
+            total_uds_length          = ((msg.data[0] & 0x0F) << 8) + msg.data[1]
+            full_response_data        = list(msg.data[2:])
+            expect_consecutive_frames = True
+            seq_number_expected       = 1
 
-        elif frame_type == 0x2 and expecting_cf:
-            seq = pci & 0x0F
-            if seq != seq_expected:
-                print(f"[ERROR] ISO-TP sequence error: expected {seq_expected}, got {seq}")
+            # ---- Flow Control (CTS) ----
+            fc_frame = [0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            time.sleep(0.01)
+            _send_can_frame(bus, TESTER_ID, fc_frame)
+
+        # ---- Consecutive Frame ----
+        elif pci_type == 0x2 and expect_consecutive_frames:
+            seq_number = msg.data[0] & 0x0F
+
+            if seq_number != seq_number_expected:
+                print(f"ISO-TP SEQ ERROR -> expected {seq_number_expected}, got {seq_number}")
                 return None
-            full_data.extend(msg.data[1:])
-            seq_expected = (seq_expected + 1) % 16
-            if len(full_data) >= expected_len:
-                return full_data[:expected_len]
+
+            full_response_data.extend(msg.data[1:])
+            seq_number_expected = (seq_number_expected + 1) % 16
+
+            if len(full_response_data) >= total_uds_length:
+                return full_response_data[:total_uds_length]
 
     return None
 
@@ -226,50 +117,91 @@ def receive_isotp_response(bus, response_id, timeout=3.0):
 # =========================
 # ISO-TP Send
 # =========================
-def send_isotp_request(bus, arbitration_id, payload):
-    length = len(payload)
+def send_isotp_request(bus, arbitration_id, data):
+    total_len = len(data)
 
-    if length <= 7:
-        sf = [length] + payload
+    # ---- Single Frame ----
+    if total_len <= 7:
+        sf = [total_len] + data + [0x00] * (7 - total_len)
         _send_can_frame(bus, arbitration_id, sf)
-        return True
+        return True, None
 
-    # First Frame
-    ff = [0x10 | ((length >> 8) & 0x0F), length & 0xFF] + payload[:6]
-    _send_can_frame(bus, arbitration_id, ff)
+    # ---- First Frame ----
+    ff_data = [
+        0x10 | ((total_len >> 8) & 0x0F),
+        total_len & 0xFF
+    ] + data[:6]
 
-    # Wait for Flow Control
-    start      = time.time()
-    stmin_sec  = 0.001
+    _send_can_frame(bus, arbitration_id, ff_data)
+
+    # ---- Wait for Flow Control ----
+    start = time.time()
+    st_min_sec = 0.001
+    fc_received = False
 
     while time.time() - start < 2.0:
-        fc = _receive_can(bus, ECU_RESPONSE_ID, timeout=0.5)
-        if not fc:
+        fc_msg = _receive_single_can_frame(bus, ECU_RESPONSE_ID, timeout=0.5)
+
+        if not fc_msg:
             continue
-        if (fc.data[0] >> 4) == 0x3:
-            stmin = fc.data[2]
-            if stmin <= 0x7F:
-                stmin_sec = stmin / 1000
-            elif 0xF1 <= stmin <= 0xF9:
-                stmin_sec = (stmin - 0xF0) / 10000
+
+        pci = (fc_msg.data[0] & 0xF0) >> 4
+
+        # ---- Flow Control Frame ----
+        if pci == 0x3:
+            flow_status = fc_msg.data[0] & 0x0F
+
+            # ---- Continue To Send (CTS) ----
+            if flow_status == 0x0:
+                st_min = fc_msg.data[2]
+
+                if st_min <= 0x7F:
+                    st_min_sec = st_min / 1000.0
+                elif 0xF1 <= st_min <= 0xF9:
+                    st_min_sec = (st_min - 0xF0) * 0.0001
+                else:
+                    st_min_sec = 0.001
+
+                fc_received = True
+                break
+
+            # ---- Wait ----
+            elif flow_status == 0x1:
+                continue
+
+            # ---- Overflow / Transmission Rejected ----
+            elif flow_status == 0x2:
+                return False, "ISOTP_FLOW_CONTROL_OVERFLOW"
+
+            # ---- Unknown Flow Status ----
             else:
-                stmin_sec = 0.001
-            break
-    else:
-        print("[ERROR] No Flow Control received")
-        return False
+                return False, f"ISOTP_FLOW_CONTROL_INVALID_STATUS_0x{flow_status:02X}"
 
-    # Consecutive Frames
-    remaining = payload[6:]
-    seq       = 1
-    while remaining:
-        time.sleep(stmin_sec)
-        cf        = [0x20 | (seq & 0x0F)] + remaining[:7]
-        _send_can_frame(bus, arbitration_id, cf)
-        remaining = remaining[7:]
-        seq       = (seq + 1) % 16
+        # ---- Non-FC frame received (unexpected) ----
+        else:
+            return False, "ISOTP_UNEXPECTED_FRAME_INSTEAD_OF_FC"
 
-    return True
+    if not fc_received:
+        return False, "ISOTP_FLOW_CONTROL_TIMEOUT"
+
+    # ---- Consecutive Frames ----
+    remaining_data = data[6:]
+    seq = 1
+
+    while remaining_data:
+        time.sleep(st_min_sec)
+
+        cf_data_len = min(7, len(remaining_data))
+        cf_data = [
+            0x20 | (seq & 0x0F)
+        ] + remaining_data[:cf_data_len]
+
+        _send_can_frame(bus, arbitration_id, cf_data)
+
+        remaining_data = remaining_data[cf_data_len:]
+        seq = (seq + 1) % 16
+
+    return True, None
 
 
 # =========================
@@ -286,104 +218,265 @@ def send_tester_present(bus):
 # =========================
 def send_uds_request(bus, sid, sub_payload, expected_positive_sid):
     uds_payload = [sid] + sub_payload
-    max_retries = 0
+
     retry_delay = 3.0
     tp_interval = 1.0
 
+    # ---- Send UDS Request ----
     if len(uds_payload) <= 7:
-        isotp_sf_data = [len(uds_payload)] + uds_payload
+        isotp_sf_data = ([len(uds_payload)] + uds_payload + [0x00] * (7 - len(uds_payload)))
         _send_can_frame(bus, TESTER_ID, isotp_sf_data)
     else:
-        if not send_isotp_request(bus, TESTER_ID, uds_payload):
-            print("Failed to send ISO-TP request.")
-            return None
+        success, isotp_error = send_isotp_request(bus, TESTER_ID, uds_payload)
+        if not success:
+            return None, isotp_error
 
-    for attempt in range(max_retries + 1):
-        response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=3.0)
+    # ---- Receive UDS Response ----
+    response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=3.0)
 
-        if response and response[0] == 0x7F:
-            if len(response) >= 3 and response[2] == 0x78:
-                print("[NRC]-0x78-Response Pending")
-                wait_start   = time.time()
-                last_tp_time = time.time()
+    if not response:
+        return None, "ECU_RESPONSE_TIMEOUT"
 
-                while time.time() - wait_start < retry_delay:
-                    pending_response = receive_isotp_response(
-                        bus, ECU_RESPONSE_ID, timeout=0.5)
-                    if pending_response:
-                        if pending_response[0] == expected_positive_sid:
-                            return pending_response
-                        if pending_response[0] == 0x7F and len(pending_response) >= 3:
-                            nrc = pending_response[2]
-                            if nrc == 0x78:
-                                print("[NRC] 0x78 Received again - Still Pending")
-                            else:
-                                print(f"Negative Response during wait: NRC 0x{nrc:02X}")
-                                return None
-                    if time.time() - last_tp_time >= tp_interval:
-                        send_tester_present(bus)
-                        last_tp_time = time.time()
+    # ---- Negative Response Handling ----
+    if response[0] == 0x7F:
+        if len(response) < 3:
+            return None, "NRC Received: Invalid Response Format"
 
-                print("No positive response after NRC 0x78.")
-                return None
+        nrc = response[2]
 
-            if len(response) >= 3:
-                print(f"Negative Response: NRC 0x{response[2]:02X}")
-            return None
+        # ---- NRC 0x78: Response Pending ----
+        if nrc == 0x78:
+            print("NRC Received: 0x78 (Response Pending)")
 
-        if response and response[0] == expected_positive_sid:
-            return response
+            wait_start   = time.time()
+            last_tp_time = time.time()
 
-        print("No valid response received.")
-        return None
+            while time.time() - wait_start < retry_delay:
+                pending_response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=0.5)
 
-    print("No response received.")
-    return None
+                if pending_response:
+                    # ---- Positive Response ----
+                    if pending_response[0] == expected_positive_sid:
+                        #print("Positive response received. Stopping Tester Present.\n")
+                        return pending_response, None
+
+                    # ---- Another Negative Response ----
+                    if pending_response[0] == 0x7F:
+                        if len(pending_response) < 3:
+                            return None, "NRC Received: Invalid Response Format"
+
+                        pending_nrc = pending_response[2]
+
+                        if pending_nrc == 0x78:
+                            print("NRC Received: 0x78 (Response Pending)")
+                            wait_start = time.time()
+                        else:
+                            return None, f"NRC Received: 0x{pending_nrc:02X}"
+                    else:
+                        return None, f"UNEXPECTED_RESPONSE_SID: 0x{pending_response[0]:02X}"
+
+                # ---- Tester Present ----
+                if time.time() - last_tp_time >= tp_interval:
+                    send_tester_present(bus)
+                    last_tp_time = time.time()
+
+            return None, "NRC Received: 0x78 - Waited no Response Received"
+
+        # ---- Other NRC ----
+        return None, f"NRC Received: 0x{nrc:02X}"
+
+    # ---- Validate Positive Response SID ----
+    if response[0] == expected_positive_sid:
+        return response, None
+
+    return None, f"UNEXPECTED_RESPONSE_SID: 0x{response[0]:02X}"
 
 
 # =========================
-# SESSION
+# Error Message Helpers
 # =========================
-def extended_diagnostic_session(bus):
-    response = send_uds_request(bus, 0x10, [0x03], 0x50)
-    if response and len(response) >= 2 and response[1] == 0x03:
-        print("[OK] Extended Diagnostic Session")
-        return True
-    print("[FAIL] Extended Diagnostic Session")
+def _communication_error_message():
+    return (
+        "- Verify failed:\n"
+        "- No communication from ECU\n"
+        "- Check vehicle ignition status\n"
+        "- Check CAN wiring\n"
+        "- Verify baud rate"
+    )
+
+# =========================
+# DTC Excel Mapping
+# =========================
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+
+def normalize_boolean_value(value):
+    if pd.isna(value):
+        return False
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ['true', 'pass', 'yes', '1', 'p', 'y', 't']:
+            return True
+        if value_lower in ['false', 'fail', 'no', '0', 'f', 'n']:
+            return False
+
     return False
 
 
-# =========================
-# SAE J2012 DECODER (REFERENCE)
-# =========================
-def decode_j2012_dtc(b1: int, b2: int) -> str:
-    systems    = {0: 'P', 1: 'C', 2: 'B', 3: 'U'}
-    system_bits = (b1 >> 6) & 0x03
-    system     = systems[system_bits]
-    digit1     = (b1 >> 4) & 0x03
-    digit2     = b1 & 0x0F
-    digit3     = (b2 >> 4) & 0x0F
-    digit4     = b2 & 0x0F
-    return f"{system}{digit1}{digit2:X}{digit3:X}{digit4:X}"
+def load_dtc_map_from_excel(excel_path):
+    if not os.path.exists(excel_path):
+        print(f"[ERROR] Excel file not found: {excel_path}")
+        return {}
 
-
-def ABS_Read_DTC(interface, channel, bitrate):
-    bus = None
     try:
-        bus = can.interface.Bus(interface=str(interface),channel=int(channel),bitrate=int(bitrate),fd=False)
+        df = pd.read_excel(excel_path)
+
+        print(f"[DEBUG] Excel columns found: {list(df.columns)}")
+
+        df.columns = df.columns.str.strip()
+
+        required_columns = ['DTC Code', 'Description', 'DTC_Required']
+        for col in required_columns:
+            if col not in df.columns:
+                print(f"[ERROR] Missing required column: '{col}'")
+                return {}
+
+        df.loc[:, 'DTC Code'] = df['DTC Code'].astype(str).str.strip().str.upper()
+        df.loc[:, 'Description'] = df['Description'].astype(str).str.strip()
+        df.loc[:, 'DTC_Required'] = df['DTC_Required'].apply(normalize_boolean_value)
+
+        dtc_map = {}
+        for _, row in df.iterrows():
+            dtc_code = row['DTC Code']
+            dtc_map[dtc_code] = {
+                "description": row['Description'],
+                "dtc_required": row['DTC_Required']
+            }
+
+        print(f"[INFO] Loaded {len(dtc_map)} DTC mappings from Excel")
+
+        return dtc_map
+
+    except Exception as e:
+        print(f"[ERROR] Failed to read Excel: {e}")
+        return {}
+
+
+# =========================
+# Session
+# =========================
+def extended_diagnostic_session(bus):
+    response, error_message = send_uds_request(bus, 0x10, [0x03], 0x50)
+
+    if response is None:
+        return False, error_message
+
+    if len(response) >= 2 and response[1] == 0x03:
+        print("[OK] Extended Diagnostic Session")
+        return True, None
+
+    print("[FAIL] Extended Diagnostic Session")
+    return False, "Extended Diagnostic Session Failed"
+
+
+# =========================
+# DTC Excel Path
+# =========================
+EXCEL_DTC_PATH   = resource_path(os.path.join("dtc_error_code", "ABS_DTC.xlsx"))
+
+
+
+# =========================
+# MAIN FUNCTION
+# =========================
+def ABS_Read_DTC(interface, channel, bitrate):
+    global START_TIME, log_counter
+    START_TIME  = time.perf_counter()
+    log_counter = 1
+    bus = None
+    system_os = platform.system()
+
+    # ---- Linux SocketCAN Setup ----
+    if system_os == "Linux":
+        try:
+            interface = "socketcan"
+            channel = "can0" if not channel else channel
+            os.system(f"sudo ip link set {channel} down")
+            os.system(f"sudo ip link set {channel} type can bitrate {int(bitrate)}")
+            os.system(f"sudo ip link set {channel} up")
+        except Exception as e:
+            error_message = f"Linux SocketCAN setup error: {e}"
+            print(error_message)
+            return False, error_message
+
+    try:
+        try:
+            bus = can.Bus(
+                interface=interface,
+                channel=channel,
+                bitrate=int(bitrate),
+                fd=False
+            )
+        except (can.CanInitializationError, can.CanError) as e:
+            error_msg_str = str(e).lower()
+            if any(term in error_msg_str for term in ["not been initialized", "invalid", "handle", "pcan"]):
+                error_message = (
+                    "- Verify failed:\n"
+                    "- PCAN USB is not connected\n"
+                    "- Check PCAN driver installation\n"
+                    "- Verify PCAN channel selection"
+                )
+            elif any(term in error_msg_str for term in ["heavy", "warning", "bus-off"]):
+                error_message = _communication_error_message()
+            else:
+                error_message = f"CAN Initialization Error: {e}"
+
+            print(error_message)
+            return False, error_message
+
         bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
 
-        # Load Excel DTC Map
+        # ---- Step 1: Load DTC Excel Map ----
         DTC_MAP = load_dtc_map_from_excel(EXCEL_DTC_PATH)
 
-        # Extended Diagnostic Session
-        if not extended_diagnostic_session(bus):
+        # ---- Step 2: Extended Diagnostic Session ----
+        session_success, session_error = extended_diagnostic_session(bus)
+
+        if not session_success:
+            if session_error and session_error != "ECU_RESPONSE_TIMEOUT":
+                print(session_error)
+                return False, [{"code": "N/A", "description": session_error}]
+
+            error_message = _communication_error_message()
+            print(error_message)
             return False, [{"code": "N/A", "description": "Extended Session Failed"}]
 
-        # Read DTCs (UDS 0x19 0x02)
-        response = send_uds_request(bus, 0x19, [0x02, 0x8F], 0x59)
+        # ---- Step 3: Read DTC Information (0x19 0x02) ----
+        response, error_message = send_uds_request(bus, 0x19, [0x02, 0x8F], 0x59)
 
-        if not response or len(response) < 3:
+        if response is None:
+            if error_message and error_message != "ECU_RESPONSE_TIMEOUT":
+                print(error_message)
+                return False, [{"code": "N/A", "description": error_message}]
+
+            error_message = _communication_error_message()
+            print(error_message)
+            return False, [{"code": "N/A", "description": "No DTC Response"}]
+
+        if len(response) < 3:
             return False, [{"code": "N/A", "description": "No DTC Response"}]
 
         if response[0] != 0x59:
@@ -392,6 +485,7 @@ def ABS_Read_DTC(interface, channel, bitrate):
         # Skip SID (0x59), SubFunction (0x02), StatusAvailabilityMask
         payload = response[3:]
 
+        # No DTCs found
         if not payload:
             print("[INFO] No DTCs detected")
             return True, []
@@ -408,11 +502,15 @@ def ABS_Read_DTC(interface, channel, bitrate):
         dtc_count     = len(payload) // 4
 
         for i in range(dtc_count):
-            b1       = payload[i * 4]
-            b2       = payload[i * 4 + 1]
-            hex_code = f"0X{b1:02X}{b2:02X}"
+            b1 = payload[i * 4]
+            b2 = payload[i * 4 + 1]
 
-            dtc_info = DTC_MAP.get(hex_code, None)
+            hex_code = f"0X{b1:02X}{b2:02X}"
+            dtc_code  = hex_code
+
+            print(f"[RAW] b1={b1:02X} b2={b2:02X} -> HEX={hex_code}")
+
+            dtc_info = DTC_MAP.get(dtc_code, None)
 
             if dtc_info:
                 description  = dtc_info["description"]
@@ -420,48 +518,52 @@ def ABS_Read_DTC(interface, channel, bitrate):
             else:
                 description  = "Unknown DTC (not in Excel)"
                 dtc_required = False
-                print(f"[WARNING] DTC {hex_code} not found in Excel mapping")
+                print(f"[WARNING] DTC {dtc_code} not found in Excel mapping")
 
             if not dtc_required:
                 overall_pass = False
 
-            print(f"[RAW] b1={b1:02X} b2={b2:02X} â†’ HEX={hex_code}")
-            print(f"[DTC] {hex_code}: {description} | DTC_Required={dtc_required}")
+            print(f"[DTC] {dtc_code}: {description} | DTC_Required={dtc_required}")
 
             detected_dtcs.append({
-                "code": hex_code,
+                "code": dtc_code,
                 "description": description
             })
 
         return overall_pass, detected_dtcs
 
+
     except can.CanError as e:
-        return False, [{"code": "N/A", "description": f"CAN Error: {e}"}]
+        error_message = f"CAN Error: {e}"
+        print(error_message)
+        return False, error_message
 
     except Exception as e:
-        return False, [{"code": "N/A", "description": f"Error: {e}"}]
+        error_message = f"ECU Error: {e}"
+        print(error_message)
+        return False, error_message
 
     finally:
         if bus:
             bus.shutdown()
-            print("CAN bus shutdown.")
+            print("CAN channel closed")
+
+        if system_os == "Linux" and channel:
+            os.system(f"sudo ip link set {channel} down")
+            print(f"{channel} Down Complete")
 
 
-# ================= ENTRY =================
+# =========================
+# ENTRY POINT
+# =========================
 if __name__ == "__main__":
-    success, dtcs = ABS_Read_DTC(
+    status, result =     ABS_Read_DTC(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000
     )
 
-    print(f"\nSUCCESS: {success}")
-    print(f"DTC COUNT: {len(dtcs)}")
-
-    if not dtcs:
-        print("No DTCs detected")
+    if status:
+        print(f"\nSTATUS : SUCCESS - READ DTC: {result}")
     else:
-        print("DETECTED DTCs:")
-        for dtc in dtcs:
-            print(f"  Code       : {dtc['code']}")
-            print(f"  Description: {dtc['description']}")
+        print(f"\nSTATUS : FAILURE / ERROR - {result}")
