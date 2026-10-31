@@ -1,8 +1,49 @@
-# IPC / EMS UDS Readers
+# J107 Static — UDS read / write / control programs
 
-Standalone UDS `ReadDataByIdentifier` (SID `0x22`) programs, one file per DID.
-Each script keeps the same ISO-TP / UDS stack as the EMS gear-position sample
-and returns a `(success, value)` tuple to `main`.
+Standalone programs from the static sample. Each file opens the CAN bus, runs
+one UDS step, and returns to `main` a two-value tuple:
+
+```python
+status, value = Some_Test(interface, channel, bitrate)
+```
+
+* success -> `(True, value)` — the read value, or `"PASSED"` for a write step
+* failure -> `(False, error_message)`
+
+A few API-backed readers take `api_url` and `vin` and return three values,
+`(status, api_value, ecu_value)`, on every path.
+
+`error_message` is a UDS error string (`NRC Received: 0xXX`,
+`ECU_RESPONSE_TIMEOUT`, `UNEXPECTED_RESPONSE_SID: 0xXX`) or one of the two
+operator-facing blocks:
+
+```text
+- Verify failed:
+- PCAN USB is not connected
+- Check PCAN driver installation
+- Verify PCAN channel selection
+```
+
+```text
+- Verify failed:
+- No communication from ECU
+- Check vehicle ignition status
+- Check CAN wiring
+- Verify baud rate
+```
+
+Every CAN file carries the same self-contained helper block (`log_print`,
+`_send_can_frame`, `_receive_single_can_frame`, `receive_isotp_response`,
+`send_isotp_request`, `send_tester_present`, `send_uds_request`,
+`_communication_error_message`), so each script runs standalone with no imports
+from its siblings. `__main__` always prints a Result block.
+
+`TVS_Nirix_J107.py` loads these dynamically with `getattr(module, <file name>)`,
+so the callable inside each file must keep the same name as the file. Three
+files predate that rule and keep their original names:
+`IPC_Read_Software_Version.py` defines `IPC_Software_Version_Number`,
+`IPC_Read_Bootloader_Version.py` defines `IPC_Bootloader_Version_Number`, and
+`IPC_Read_Varient_Data.py` defines `IPC_Read_Variant_Data`.
 
 ## CAN IDs
 
@@ -12,8 +53,13 @@ and returns a `(success, value)` tuple to `main`.
 | EMS | `0x7E0`     | `0x7E8`        |
 | HLC | `0x7D3`     | `0x73A`        |
 
-Windows default in every `__main__`: `interface="kvaser"`, `channel=0`, `bitrate=500000`.
-On Linux the script switches to `socketcan` / `can0` automatically.
+Default `__main__`: `interface="pcan"`, `channel="PCAN_USBBUS1"`,
+`bitrate=500000`. On Linux the script switches to `socketcan` / `can0`
+automatically.
+
+The five `EMS_ABS_Read_Ride_Mode_*` programs talk to two ECUs at once and carry
+their own `ABS_REQUEST_ID` / `EMS_REQUEST_ID` pair alongside the standard
+`TESTER_ID` / `ECU_RESPONSE_ID`.
 
 ## Programs
 
