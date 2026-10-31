@@ -1,11 +1,45 @@
 # IMU / ABS EOL programs
 
 Standalone programs from the IMU sample. Each file opens the CAN bus, runs
-one UDS step, and returns to `main` the same way as `Write_Checksum`:
-pass/fail steps return one value (`True` / `False`); reads return two
-(`status, value`). `__main__` always prints a Result block.
+one UDS step, and returns to `main` a two-value tuple:
 
-**Test stamp is not included yet** (no DID / payload was provided).
+```python
+status, value = Some_Test(interface, channel, bitrate)
+```
+
+* success -> `(True, value)`     where `value` is the read value, or `"PASSED"` /
+  `True` for write / control steps
+* failure -> `(False, error_message)`
+
+`error_message` is either a UDS error string (`NRC Received: 0xXX`,
+`ECU_RESPONSE_TIMEOUT`, `UNEXPECTED_RESPONSE_SID: 0xXX`) or one of the two
+operator-facing blocks:
+
+```text
+- Verify failed:
+- PCAN USB is not connected
+- Check PCAN driver installation
+- Verify PCAN channel selection
+```
+
+```text
+- Verify failed:
+- No communication from ECU
+- Check vehicle ignition status
+- Check CAN wiring
+- Verify baud rate
+```
+
+Every file carries the same self-contained CAN/UDS helper block
+(`log_print`, `_send_can_frame`, `_receive_single_can_frame`,
+`receive_isotp_response`, `send_isotp_request`, `send_tester_present`,
+`send_uds_request`, `_communication_error_message`), so each script runs
+standalone with no imports from its siblings. `__main__` always prints a
+Result block.
+
+`TVS_Nirix_J107.py` loads these dynamically with
+`getattr(module, <file name>)`, so the callable inside each file must keep the
+same name as the file.
 
 ## CAN IDs
 
