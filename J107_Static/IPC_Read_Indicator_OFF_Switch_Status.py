@@ -372,6 +372,16 @@ def Read_Indicator_OFF_Switch_Status(bus, expected_value=0x00, timeout=5.0, poll
 
         time.sleep(poll_interval)
 
+
+def status_text(raw_value):
+    """Map the indicator byte to the phrase main compares against."""
+    return {
+        0x00: "INDICATOR SWITCH IS OFF(0x00)",
+        0x01: "LEFT INDICATOR SWITCH IS ON(0x01)",
+        0x02: "RIGHT INDICATOR SWITCH IS ON(0x02)",
+    }.get(raw_value, f"UNKNOWN INDICATOR SWITCH STATUS(0x{raw_value:02X})")
+
+
 # =========================
 # MAIN FUNCTION
 # =========================
@@ -425,10 +435,11 @@ def IPC_Read_Indicator_OFF_Switch_Status(interface, channel, bitrate):
         value = Read_Indicator_OFF_Switch_Status(bus,expected_value=0x00,timeout=5.0,poll_interval=0.2)
         if _is_error_value(value):
             return False, value
-        if value is None:
-            return False, "ERROR: No value received from ECU."
         print(f"Indicator OFF Switch Status: 0x{value:02X}")
-        return True, value
+        # main compares this text verbatim, so return the status phrase
+        status_message = status_text(value)
+        print(f"Indicator Switch Status: {status_message}")
+        return True, status_message
 
 
     except can.CanError as e:

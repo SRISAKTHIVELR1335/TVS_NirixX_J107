@@ -109,6 +109,9 @@ their own `ABS_REQUEST_ID` / `EMS_REQUEST_ID` pair alongside the standard
 | `EMS_Read_Side_Stand_Sensor_Voltage.py` | `EMS_Read_Side_Stand_Sensor_Voltage` | `01 23` | Read and decode | `(True, "SIDE STANDED")` or `(True, "NOT SIDE STANDED")` |
 | `EMS_Read_Kill_Switch_Status.py` | `EMS_Read_Kill_Switch_Status` | `10 24` | Read and decode | `(True, "KILL SWITCH ON")` or `(True, "KILL SWITCH OFF")` |
 | `IPC_Read_Indicator_Switch_Status.py` | `IPC_Read_Indicator_Switch_Status` | `E1 C9` | Read and decode | `(True, "LEFT")` or `(True, "RIGHT")` |
+| `IPC_Read_Left_Indicator_Switch_Status.py` | `IPC_Read_Left_Indicator_Switch_Status` | `E1 C9` | Poll until `0x01` | `(True, "LEFT INDICATOR SWITCH IS ON(0x01)")` |
+| `IPC_Read_Right_Indicator_Switch_Status.py` | `IPC_Read_Right_Indicator_Switch_Status` | `E1 C9` | Poll until `0x02` | `(True, "RIGHT INDICATOR SWITCH IS ON(0x02)")` |
+| `IPC_Read_Indicator_OFF_Switch_Status.py` | `IPC_Read_Indicator_OFF_Switch_Status` | `E1 C9` | Poll until `0x00` | `(True, "INDICATOR SWITCH IS OFF(0x00)")` |
 | `EMS_Read_IMMO_Status.py` | `EMS_Read_IMMO_Status` | `02 12` | Poll until `0x01` | `(True, 0x01)` |
 | `IPC_Read_DRL_Status.py` | `IPC_Read_DRL_Status` | `09 12` | Poll until `0x01` | `(True, 0x01)` |
 | `IPC_Read_TPMS_Config_Status.py` | `IPC_Read_TPMS_Config_Status` | `B1 DB` | Poll until `0x01` | `(True, 0x01)` |
@@ -140,6 +143,12 @@ only (no unit was specified).
 
 IDLE / FULL / BLIP APS share DIDs `11 02` and `11 03`. Put the throttle in that
 state, then run the matching script.
+
+The three `E1 C9` indicator readers return the status phrase, not the raw byte,
+because `TVS_Nirix_J107.py` compares the returned text against those exact
+strings. `status_text()` maps `0x00` / `0x01` / `0x02` to the phrase and falls
+back to `UNKNOWN INDICATOR SWITCH STATUS(0xXX)`. `IPC_Read_Hazard_Switch_Status`
+follows the same convention with `HAZARD SWITCH ON (0x01)`.
 
 Decoded maps:
 
