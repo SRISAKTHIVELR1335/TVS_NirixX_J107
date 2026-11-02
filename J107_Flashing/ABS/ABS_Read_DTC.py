@@ -557,7 +557,7 @@ def ABS_Read_DTC(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     ABS_Read_DTC(
+    status, result = ABS_Read_DTC(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000

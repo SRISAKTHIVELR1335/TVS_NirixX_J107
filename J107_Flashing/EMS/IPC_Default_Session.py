@@ -398,7 +398,7 @@ def IPC_Default_Session(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     IPC_Default_Session(
+    status, result = IPC_Default_Session(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000

@@ -398,7 +398,7 @@ def VCU_Extended_Session(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     VCU_Extended_Session(
+    status, result = VCU_Extended_Session(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000

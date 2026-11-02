@@ -479,7 +479,7 @@ def EMS_Read_SKU(interface, channel, bitrate, api_url, vin_number):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, api_value, result =     EMS_Read_SKU(
+    status, api_value, result = EMS_Read_SKU(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000,

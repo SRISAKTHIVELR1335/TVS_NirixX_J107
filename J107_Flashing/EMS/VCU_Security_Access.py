@@ -523,7 +523,7 @@ def VCU_Security_Access(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     VCU_Security_Access(
+    status, result = VCU_Security_Access(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000

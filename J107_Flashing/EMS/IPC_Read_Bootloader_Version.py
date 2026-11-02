@@ -477,7 +477,7 @@ def IPC_Bootloader_Version_Number(interface, channel, bitrate, api_url, vin_numb
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, api_value, result =     IPC_Bootloader_Version_Number(
+    status, api_value, result = IPC_Bootloader_Version_Number(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000,

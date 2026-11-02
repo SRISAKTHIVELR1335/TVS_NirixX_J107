@@ -475,7 +475,7 @@ def IPC_Read_VIN(interface, channel, bitrate, api_url, vin_number):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, api_value, result =     IPC_Read_VIN(
+    status, api_value, result = IPC_Read_VIN(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000,

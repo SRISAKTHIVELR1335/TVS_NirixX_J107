@@ -401,7 +401,7 @@ def IPC_Write_Test_Stamp(interface, channel, bitrate):
 # ENTRY POINT
 # =========================
 if __name__ == "__main__":
-    status, result =     IPC_Write_Test_Stamp(
+    status, result = IPC_Write_Test_Stamp(
         interface="pcan",
         channel="PCAN_USBBUS1",
         bitrate=500000
