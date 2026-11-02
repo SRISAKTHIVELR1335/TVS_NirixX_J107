@@ -1,0 +1,526 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Feb 18 12:56:59 2026
+
+@author: Sri.Sakthivel
+"""
+
+import os
+import can
+import time
+import requests
+import platform
+
+# =========================
+# Configuration
+# =========================
+TESTER_ID        = 0x7E0
+ECU_RESPONSE_ID  = 0x7E8
+log_counter      = 1
+START_TIME       = time.perf_counter()
+
+
+# =========================
+# LOGGING
+# =========================
+def log_print(arb_id, direction, data):
+    global log_counter
+    elapsed_time = time.perf_counter() - START_TIME
+    data_str = ' '.join(f"{b:02X}" for b in data)    
+    print(f"{log_counter:>3}  {elapsed_time:010.6f} DT {arb_id:04X} {direction} 8  {data_str}")
+    log_counter += 1
+
+
+# =========================
+# CAN Helpers
+# =========================
+def _send_can_frame(bus, arbitration_id, data):
+    padded_data = list(data)
+    while len(padded_data) < 8:
+        padded_data.append(0x00)
+
+    msg = can.Message(
+        arbitration_id=arbitration_id,
+        data=bytearray(padded_data[:8]),
+        is_fd=False,
+        is_extended_id=False
+    )
+    bus.send(msg)
+    log_print(msg.arbitration_id, "TX", msg.data)
+
+
+def _receive_single_can_frame(bus, response_id, timeout=0.5):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        remaining_timeout = timeout - (time.time() - start_time)
+        if remaining_timeout <= 0:
+            break
+
+        msg = bus.recv(timeout=remaining_timeout)
+        if msg:
+            if msg.arbitration_id == response_id:
+                log_print(msg.arbitration_id, "RX", msg.data)
+                return msg
+    return None
+
+
+# =========================
+# ISO-TP Receive
+# =========================
+def receive_isotp_response(bus, response_id, timeout=3.0):
+    start_time                = time.time()
+    full_response_data        = []
+    expect_consecutive_frames = False
+    seq_number_expected       = 1
+    total_uds_length          = 0
+
+    while time.time() - start_time < timeout:
+        msg = _receive_single_can_frame(bus, response_id, timeout=1.0)
+        if not msg:
+            continue
+
+        pci_type = (msg.data[0] & 0xF0) >> 4
+
+        # ---- Single Frame ----
+        if pci_type == 0x0:
+            uds_length = msg.data[0] & 0x0F
+            return list(msg.data[1:1 + uds_length])
+
+        # ---- First Frame ----
+        elif pci_type == 0x1:
+            total_uds_length          = ((msg.data[0] & 0x0F) << 8) + msg.data[1]
+            full_response_data        = list(msg.data[2:])
+            expect_consecutive_frames = True
+            seq_number_expected       = 1
+
+            # ---- Flow Control (CTS) ----
+            fc_frame = [0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            time.sleep(0.01)
+            _send_can_frame(bus, TESTER_ID, fc_frame)
+
+        # ---- Consecutive Frame ----
+        elif pci_type == 0x2 and expect_consecutive_frames:
+            seq_number = msg.data[0] & 0x0F
+
+            if seq_number != seq_number_expected:
+                print(f"ISO-TP SEQ ERROR -> expected {seq_number_expected}, got {seq_number}")
+                return None
+
+            full_response_data.extend(msg.data[1:])
+            seq_number_expected = (seq_number_expected + 1) % 16
+
+            if len(full_response_data) >= total_uds_length:
+                return full_response_data[:total_uds_length]
+
+    return None
+
+
+# =========================
+# ISO-TP Send
+# =========================
+def send_isotp_request(bus, arbitration_id, data):
+    total_len = len(data)
+
+    # ---- Single Frame ----
+    if total_len <= 7:
+        sf = [total_len] + data + [0x00] * (7 - total_len)
+        _send_can_frame(bus, arbitration_id, sf)
+        return True, None
+
+    # ---- First Frame ----
+    ff_data = [
+        0x10 | ((total_len >> 8) & 0x0F),
+        total_len & 0xFF
+    ] + data[:6]
+
+    _send_can_frame(bus, arbitration_id, ff_data)
+
+    # ---- Wait for Flow Control ----
+    start = time.time()
+    st_min_sec = 0.001
+    fc_received = False
+
+    while time.time() - start < 2.0:
+        fc_msg = _receive_single_can_frame(bus, ECU_RESPONSE_ID, timeout=0.5)
+
+        if not fc_msg:
+            continue
+
+        pci = (fc_msg.data[0] & 0xF0) >> 4
+
+        # ---- Flow Control Frame ----
+        if pci == 0x3:
+            flow_status = fc_msg.data[0] & 0x0F
+
+            # ---- Continue To Send (CTS) ----
+            if flow_status == 0x0:
+                st_min = fc_msg.data[2]
+
+                if st_min <= 0x7F:
+                    st_min_sec = st_min / 1000.0
+                elif 0xF1 <= st_min <= 0xF9:
+                    st_min_sec = (st_min - 0xF0) * 0.0001
+                else:
+                    st_min_sec = 0.001
+
+                fc_received = True
+                break
+
+            # ---- Wait ----
+            elif flow_status == 0x1:
+                continue
+
+            # ---- Overflow / Transmission Rejected ----
+            elif flow_status == 0x2:
+                return False, "ISOTP_FLOW_CONTROL_OVERFLOW"
+
+            # ---- Unknown Flow Status ----
+            else:
+                return False, f"ISOTP_FLOW_CONTROL_INVALID_STATUS_0x{flow_status:02X}"
+
+        # ---- Non-FC frame received (unexpected) ----
+        else:
+            return False, "ISOTP_UNEXPECTED_FRAME_INSTEAD_OF_FC"
+
+    if not fc_received:
+        return False, "ISOTP_FLOW_CONTROL_TIMEOUT"
+
+    # ---- Consecutive Frames ----
+    remaining_data = data[6:]
+    seq = 1
+
+    while remaining_data:
+        time.sleep(st_min_sec)
+
+        cf_data_len = min(7, len(remaining_data))
+        cf_data = [
+            0x20 | (seq & 0x0F)
+        ] + remaining_data[:cf_data_len]
+
+        _send_can_frame(bus, arbitration_id, cf_data)
+
+        remaining_data = remaining_data[cf_data_len:]
+        seq = (seq + 1) % 16
+
+    return True, None
+
+
+# =========================
+# Tester Present (SID 0x3E)
+# =========================
+def send_tester_present(bus):
+    uds_payload   = [0x3E, 0x80]
+    isotp_sf_data = [len(uds_payload)] + uds_payload
+    _send_can_frame(bus, TESTER_ID, isotp_sf_data)
+
+
+# =========================
+# UDS Core
+# =========================
+def send_uds_request(bus, sid, sub_payload, expected_positive_sid):
+    uds_payload = [sid] + sub_payload
+
+    retry_delay = 3.0
+    tp_interval = 1.0
+
+    # ---- Send UDS Request ----
+    if len(uds_payload) <= 7:
+        isotp_sf_data = ([len(uds_payload)] + uds_payload + [0x00] * (7 - len(uds_payload)))
+        _send_can_frame(bus, TESTER_ID, isotp_sf_data)
+    else:
+        success, isotp_error = send_isotp_request(bus, TESTER_ID, uds_payload)
+        if not success:
+            return None, isotp_error
+
+    # ---- Receive UDS Response ----
+    response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=3.0)
+
+    if not response:
+        return None, "ECU_RESPONSE_TIMEOUT"
+
+    # ---- Negative Response Handling ----
+    if response[0] == 0x7F:
+        if len(response) < 3:
+            return None, "NRC Received: Invalid Response Format"
+
+        nrc = response[2]
+
+        # ---- NRC 0x78: Response Pending ----
+        if nrc == 0x78:
+            print("NRC Received: 0x78 (Response Pending)")
+
+            wait_start   = time.time()
+            last_tp_time = time.time()
+
+            while time.time() - wait_start < retry_delay:
+                pending_response = receive_isotp_response(bus, ECU_RESPONSE_ID, timeout=0.5)
+
+                if pending_response:
+                    # ---- Positive Response ----
+                    if pending_response[0] == expected_positive_sid:
+                        #print("Positive response received. Stopping Tester Present.\n")
+                        return pending_response, None
+
+                    # ---- Another Negative Response ----
+                    if pending_response[0] == 0x7F:
+                        if len(pending_response) < 3:
+                            return None, "NRC Received: Invalid Response Format"
+
+                        pending_nrc = pending_response[2]
+
+                        if pending_nrc == 0x78:
+                            print("NRC Received: 0x78 (Response Pending)")
+                            wait_start = time.time()  # Reset wait timer on consecutive 0x78
+                        else:
+                            return None, f"NRC Received: 0x{pending_nrc:02X}"
+                    else:
+                        return None, f"UNEXPECTED_RESPONSE_SID: 0x{pending_response[0]:02X}"
+
+                # ---- Tester Present ----
+                if time.time() - last_tp_time >= tp_interval:
+                    send_tester_present(bus)
+                    last_tp_time = time.time()
+
+            return None, "NRC Received: 0x78 - Waited no Response Received"
+
+        # ---- Other NRC ----
+        return None, f"NRC Received: 0x{nrc:02X}"
+
+    # ---- Validate Positive Response SID ----
+    if response[0] == expected_positive_sid:
+        return response, None
+
+    return None, f"UNEXPECTED_RESPONSE_SID: 0x{response[0]:02X}"
+
+
+# =============================================================
+# CAL ID Read Function (ECU - OBD Mode 0xF1 PID 0x82)
+# =============================================================
+def Read_Bosch_EMS_CAL_ID(bus):
+    # Service 0x22 PID 0xF182 -> Expected Positive SID 0x62
+    response, error = send_uds_request(bus, 0x22, [0xF1, 0x82], 0x62)
+
+    if error:
+        return None, error
+
+    if not response:
+        return None, "ECU_RESPONSE_TIMEOUT"
+
+    if response[0] != 0x62:
+        return None, f"UNEXPECTED_RESPONSE_SID: 0x{response[0]:02X}"
+
+    if len(response) < 3:
+        return None, f"Response too short: {len(response)} bytes"
+
+    if response[2] != 0x82:
+        return None, f"PID mismatch: got 0x{response[1]:02X}, expected 0x82"
+
+    if len(response) < 4:
+        return None, "No CAL ID data bytes in response"
+
+    # response[0] = SID (0x62), response[1] = PID (0x82), response[2] = NODI/Count
+    cal_id_bytes = response[3:]
+
+    if all(b == 0x00 for b in cal_id_bytes):
+        cal_id = '0' * len(cal_id_bytes)
+        print(f"All-zero CAL ID detected, returning: {cal_id}")
+        return cal_id, None
+
+    try:
+        cal_id = bytes(cal_id_bytes).rstrip(b"\x00").decode('ascii', errors='ignore').strip()
+    except (ValueError, UnicodeDecodeError) as e:
+        print(f"ASCII decode failed: {e}")
+        cal_id = ''.join(chr(b) for b in cal_id_bytes if 32 <= b <= 126).strip()
+
+    return cal_id, None
+
+
+# =============================================================
+# API Fetch Function
+# =============================================================
+def normalize_api_sku(sku_str):
+    if not sku_str:
+        return None
+
+    if " " in sku_str:
+        try:
+            return ''.join(chr(int(x, 16)) for x in sku_str.split() if int(x, 16) != 0).strip()
+        except ValueError:
+            return sku_str.strip()
+
+    return sku_str.strip()
+
+
+def fetch_cal_id_from_api(api_url):
+    try:
+        response = requests.get(api_url, timeout=5)
+        response.raise_for_status()
+        api_response = response.json()
+
+        modules = api_response.get("data", {}).get("modules", [])
+
+        for module in modules:
+            if module.get("module") == "PCM":
+                for config in module.get("configs", []):
+                    if config.get("refname") == "PCM_CALID_READ":
+                        messages = config.get("messages", [])
+                        for message in messages:
+                            txbytes = message.get("txbytes", "").strip()
+                            if txbytes:
+                                print(f"API txbytes (full): {txbytes}")
+                                api_cal_id = normalize_api_sku(txbytes)
+                                return api_cal_id, None
+
+        error_message = "PCM_CALID_READ entry not found in API response"
+        return None, error_message
+
+    except requests.exceptions.Timeout:
+        error_message = "API request timed out"
+        return None, error_message
+
+    except requests.exceptions.HTTPError as e:
+        error_message = f"API HTTP error: {e.response.status_code} - {e.response.reason}"
+        return None, error_message
+
+    except Exception as e:
+        error_message = f"API error: {e}"
+        return None, error_message
+
+
+# =========================
+# MAIN FUNCTION
+# =========================
+def Bosch_EMS_Read_CALID(interface, channel, bitrate, api_url, vin):
+    vin_clean = vin.strip() if vin else ""
+    if not api_url.rstrip("/").endswith(vin_clean):
+        api_url = f"{api_url.rstrip('/')}/{vin_clean}"
+
+    global START_TIME, log_counter
+    START_TIME  = time.perf_counter()
+    log_counter = 1
+    bus = None
+    api_cal_id = None
+    os_name = platform.system()
+
+    try:
+        # ---- Step 1: Fetch Target CAL ID from API ----
+        api_cal_id, api_error = fetch_cal_id_from_api(api_url)
+
+        if api_error:
+            print(api_error)
+            return False, None, api_error
+
+        print(f"API CAL ID: {api_cal_id}")
+
+        # ---- Step 2: Linux SocketCAN Setup ----
+        if os_name == "Linux":
+            try:
+                interface = "socketcan"
+                channel = "can0" if not channel else channel
+                os.system(f"sudo ip link set {channel} down")
+                os.system(f"sudo ip link set {channel} type can bitrate {int(bitrate)}")
+                os.system(f"sudo ip link set {channel} up")
+            except Exception as e:
+                error_message = f"Linux SocketCAN setup error: {e}"
+                print(error_message)
+                return False, api_cal_id, error_message
+
+        # ---- Step 3: Initialize CAN Bus ----
+        try:
+            bus = can.Bus(interface=interface,channel=channel,bitrate=int(bitrate),fd=False)
+            
+        except (can.CanInitializationError, can.CanError) as e:
+            error_msg_str = str(e).lower()
+            if any(term in error_msg_str for term in ["not been initialized", "invalid", "handle", "pcan"]):
+                error_message = (
+                    "- Verify failed:\n"
+                    "- PCAN USB is not connected\n"
+                    "- Check PCAN driver installation\n"
+                    "- Verify PCAN channel selection"
+                )
+            elif any(term in error_msg_str for term in ["heavy", "warning", "bus-off"]):
+                error_message = (
+                    "- Verify failed:\n"
+                    "- No communication from ECU\n"
+                    "- Check vehicle ignition status\n"
+                    "- Check CAN wiring\n"
+                    "- Verify baud rate"
+                )
+            else:
+                error_message = f"CAN Initialization Error: {e}"
+
+            print(error_message)
+            return False, api_cal_id, error_message
+
+        bus.set_filters([{"can_id": ECU_RESPONSE_ID, "can_mask": 0x7FF}])
+
+        # ---- Step 4: Read CAL ID from ECU ----
+        ecu_cal_id, error = Read_Bosch_EMS_CAL_ID(bus)
+
+        if error:
+            if error == "ECU_RESPONSE_TIMEOUT":
+                error_message = (
+                    "- Verify failed:\n"
+                    "- No communication from ECU\n"
+                    "- Check vehicle ignition status\n"
+                    "- Check CAN wiring\n"
+                    "- Verify baud rate"
+                )
+                print(error_message)
+                return False, api_cal_id, error_message
+            else:
+                print(error)
+                return False, api_cal_id, error
+
+        print(f"Conti EMS ECU CAL ID : {ecu_cal_id}")
+
+        # ---- Step 5: Verify & Compare ----
+        ecu_clean = ecu_cal_id.strip().upper()
+        api_clean = api_cal_id.strip().upper()
+
+        if ecu_clean == api_clean:
+            print("CAL ID MATCHED")
+            return True, api_cal_id, ecu_cal_id
+        else:
+            print("CAL ID MISMATCHED")
+            return False, api_cal_id, ecu_cal_id
+
+    except can.CanError as e:
+        error_message = f"CAN Error: {e}"
+        print(error_message)
+        return False, api_cal_id, error_message
+
+    except Exception as e:
+        error_message = f"ECU Error: {e}"
+        print(error_message)
+        return False, api_cal_id, error_message
+
+    finally:
+        if bus:
+            bus.shutdown()
+            print("CAN channel closed")
+
+        if os_name == "Linux" and channel:
+            os.system(f"sudo ip link set {channel} down")
+            print(f"{channel} Down Complete")
+
+
+# =========================
+# ENTRY POINT
+# =========================
+if __name__ == "__main__":
+    success, api_cal_id, ecu_cal_id = Bosch_EMS_Read_CALID(
+        interface="pcan",
+        channel="PCAN_USBBUS1",
+        bitrate=500000,
+        api_url = "http://10.121.2.107:3000/vehicles/flashFile/ejo",
+        vin="MD637ET1000000000"
+    )
+
+    if success:
+        print("\nSTATUS : SUCCESS - CAL ID MATCH")
+    else:
+        print("\nSTATUS : FAILURE / MISMATCH / ERROR")
+
+    print(f"API CAL ID       : {api_cal_id}")
+    print(f"ECU CAL ID / Res : {ecu_cal_id}")
